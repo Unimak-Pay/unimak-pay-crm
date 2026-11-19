@@ -10,5 +10,6 @@ describe("safeNext", () => {
     ["https://evil.example", "/"],
     ["/sign-in", "/"],
     ["/no-access", "/"],
+    ["/auth/accept-invite?token_hash=x", "/"],
   ])("%s → %s", (input, out) => expect(safeNext(input)).toBe(out));
 });

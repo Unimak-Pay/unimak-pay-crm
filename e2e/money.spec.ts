@@ -83,7 +83,7 @@ test("fees: an ambiguous rate rule is refused inline with the server's message",
 test("transfers: retrying a FAILED transfer asks for confirmation naming the amount", async ({ page }) => {
   await signIn(page, PERSONA.super, { totp: true });
   await page.goto("/treasury/transfers?status=FAILED");
-  await page.locator("tbody tr").first().locator("td").first().click();
+  await page.locator("tbody tr").first().getByRole("link", { name: "Open" }).dispatchEvent("click");
   await expect(page).toHaveURL(/\/treasury\/transfers\/[0-9a-f-]+$/);
   await page.getByRole("button", { name: "Retry" }).click();
   const dialog = page.getByRole("alertdialog");

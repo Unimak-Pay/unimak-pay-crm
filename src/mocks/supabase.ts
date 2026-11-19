@@ -27,6 +27,12 @@ export function decodeMockJwt(token: string | null | undefined): MockClaims | nu
   }
 }
 
+/** Every POST /verify (read by e2e: opening a link page must not verify). */
+function verifyCalls(): string[] {
+  const w = window as unknown as { __mockVerifyCalls?: string[] };
+  return (w.__mockVerifyCalls ??= []);
+}
+
 function enrolled(): Set<string> {
   try {
     return new Set(JSON.parse(sessionStorage.getItem(ENROLLED_KEY) ?? "[]") as string[]);
@@ -110,6 +116,27 @@ export function supabaseHandlers(baseUrl: string) {
       return HttpResponse.json(user(c.email));
     }),
     http.post(u("/logout"), () => new HttpResponse(null, { status: 204 })),
+    // Email links: token_hash "invite:<email>" / "recovery:<email>"; "expired" / "used" are refused.
+    http.post(u("/verify"), async ({ request }) => {
+      verifyCalls().push(new Date().toISOString());
+      const body = (await request.json()) as { token_hash?: string; type?: string };
+      const [kind, email] = (body.token_hash ?? "").split(":");
+      if (!email || kind !== body.type) {
+        return HttpResponse.json({ code: 403, error_code: "otp_expired", msg: "Email link is invalid or has expired" }, { status: 403 });
+      }
+      return HttpResponse.json(session(email.toLowerCase(), "aal1"));
+    }),
+    http.put(u("/user"), async ({ request }) => {
+      const c = bearerEmail(request);
+      if (!c) return HttpResponse.json({ code: 401, msg: "invalid JWT" }, { status: 401 });
+      const body = (await request.json()) as { password?: string };
+      if (body.password && body.password.length < 12) {
+        return HttpResponse.json({ code: 422, error_code: "weak_password", msg: "Password should be at least 12 characters." }, { status: 422 });
+      }
+      return HttpResponse.json(user(c.email));
+    }),
+    // Always 200, like Supabase: no account enumeration.
+    http.post(u("/recover"), () => HttpResponse.json({})),
     http.post(u("/factors"), ({ request }) => {
       const c = bearerEmail(request);
       if (!c) return HttpResponse.json({ msg: "invalid JWT" }, { status: 401 });

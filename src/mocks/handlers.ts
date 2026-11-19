@@ -95,6 +95,17 @@ function body<T>(request: Request): Promise<T> {
   return request.json().catch(() => ({})) as Promise<T>;
 }
 
+/**
+ * Invite email outcome by address (mock hooks): "+registered" ALREADY_REGISTERED, "+noconfig"
+ * NOT_CONFIGURED, "+fail" FAILED (a re-send then succeeds), anything else SENT.
+ */
+function inviteOutcome(email: string): S["InviteOutcome"] {
+  if (email.includes("+registered")) return { status: "ALREADY_REGISTERED", message: "A user with this email address has already been registered" };
+  if (email.includes("+noconfig")) return { status: "NOT_CONFIGURED", message: "SUPABASE_SERVICE_ROLE_KEY is not set on the backend" };
+  if (email.includes("+fail")) return { status: "FAILED", message: "Email rate limit exceeded" };
+  return { status: "SENT" };
+}
+
 // ── payments ──
 function filterPayments(url: URL, me: Principal) {
   const q = Object.fromEntries(url.searchParams);
@@ -317,7 +328,21 @@ export const apiHandlers = [
     };
     db.users.push(u);
     audit(me, "user.create", "AdminUser", u.id, null, u);
-    return HttpResponse.json(u, { status: 201 });
+    return HttpResponse.json({ ...u, invitation: inviteOutcome(email) }, { status: 201 });
+  }),
+  route("adminResendInvite", ({ params, me }) => {
+    const u = db.users.find((x) => x.id === params.id);
+    if (!u) return fail(404, "NOT_FOUND", "Admin user not found");
+    // e2e hook: race@… "signs in" between the list loading and the re-send
+    if (u.email.startsWith("race@") && !u.authUserId) {
+      u.authUserId = uuid(2);
+      u.lastLoginAt = now();
+    }
+    if (!u.active) return fail(409, "INVALID_STATE", `${u.email} is deactivated. Reactivate them first.`);
+    if (u.authUserId) return fail(409, "INVALID_STATE", `${u.email} has already signed in; there is nothing to re-send.`);
+    audit(me, "admin_user.invite", "AdminUser", u.id, null, { email: u.email });
+    const outcome = inviteOutcome(u.email);
+    return HttpResponse.json({ ...u, invitation: outcome.status === "FAILED" ? { status: "SENT" } : outcome });
   }),
   route("adminGetUser", ({ params }) => {
     const u = db.users.find((x) => x.id === params.id);

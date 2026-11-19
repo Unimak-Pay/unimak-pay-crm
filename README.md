@@ -49,7 +49,18 @@ No other secrets belong in this app. `UNIMAK_API_URL` must never be `NEXT_PUBLIC
 - **Authentication → Multi-Factor:** enable **TOTP**. It's mandatory for `SUPER_ADMIN` and `BURSAR`
   (the backend answers `403 MFA_REQUIRED` for an `aal1` token); the app walks them through
   enrolment on first sign-in.
-- **URL configuration:** add the dashboard's URLs (localhost and Vercel) to the redirect allow list.
+- **URL configuration:** Site URL = the dashboard (`https://unimak-pay-crm.vercel.app`). Add the
+  dashboard's URLs (localhost and Vercel, incl. `/auth/reset-password`) to the redirect allow list.
+- **Email templates: required for invites and resets.** Point the links at the dashboard's
+  token-hash pages, **not** `{{ .ConfirmationURL }}`. That URL is Supabase's own `/verify`, which
+  uses up the token on GET, so Outlook / Office 365 link scanners would burn every invite.
+  - *Invite user:* `{{ .SiteURL }}/auth/accept-invite?token_hash={{ .TokenHash }}&type=invite`
+  - *Reset password:* `{{ .SiteURL }}/auth/reset-password?token_hash={{ .TokenHash }}&type=recovery`
+
+  These pages only render on GET. The token is exchanged when the person presses the button,
+  through a server action (`src/auth/email-link-action.ts`) so `@supabase/ssr` sets the session
+  cookies. Then they choose a password (12+ characters) and continue into the normal 2FA step and
+  `/me`, which binds the invitation.
 
 ## Local dev loop
 
@@ -92,7 +103,14 @@ gating is realistic. State resets on reload.
 | `auditor@unimak.test` | AUDITOR | — |
 | any other email | not an admin → "no access" | — |
 
-Any password works except `wrong`. The TOTP code is `123456`. Test hooks: a fee type code ending
+Any password works except `wrong`. The TOTP code is `123456`.
+
+**Email links:** use `token_hash=invite:<email>` or `recovery:<email>`, e.g.
+`/auth/accept-invite?token_hash=invite:pending@unimak.test&type=invite`. `token_hash=expired` is
+refused like a used link. **Invite outcomes** depend on the email: `+registered` gives
+ALREADY_REGISTERED, `+noconfig` NOT_CONFIGURED, `+fail` FAILED (re-send then succeeds), anything
+else SENT. Re-sending for `race@unimak.test` hits the 409 "already signed in" case. In mock mode
+the link is verified by the browser client, because MSW can't reach a server action. Test hooks: a fee type code ending
 in `FAIL` simulates Monime failing to create its account. A payout narration containing
 `SIMULATE_503` fails the first attempt with 503.
 
@@ -137,6 +155,9 @@ Never hand-write API types. If the UI needs something the spec doesn't have, it'
   (what people type), `sleInWords`.
 - **Time** `src/lib/time.ts`: Africa/Freetown (UTC), ISO on hover; calendar days stay strings.
 - **Pages** live under `src/app/(app)/…`; each list keeps its filters in the URL.
+- **Public routes:** `/sign-in`, `/sign-in/2fa`, `/no-access`, `/auth/accept-invite`,
+  `/auth/forgot-password`, `/auth/reset-password`. They live in the `(auth)` route group; there is
+  no middleware. Everything under `(app)` is gated client-side by the session (`AppShell`).
 
 ## Safety
 
