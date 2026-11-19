@@ -14,6 +14,7 @@ import {
 } from "@tanstack/react-table";
 import { ArrowDown, ArrowUp, ArrowUpDown, Loader2 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -89,6 +90,7 @@ export function DataTable<T extends RowData>({
   serverSort,
   className,
 }: DataTableProps<T>) {
+  const router = useRouter();
   const [clientSorting, setClientSorting] = useState<SortingState>([]);
 
   const serverSorting = useMemo<SortingState>(() => {
@@ -183,7 +185,21 @@ export function DataTable<T extends RowData>({
               tableRows.map((row) => {
                 const href = rowHref?.(row.original as T);
                 return (
-                  <TableRow key={row.id} className={cn(href && "relative cursor-pointer")}>
+                  <TableRow
+                    key={row.id}
+                    className={cn(href && "cursor-pointer")}
+                    onClick={
+                      href
+                        ? (e) => {
+                            // let buttons, links and text selection behave normally
+                            if ((e.target as HTMLElement).closest("a,button,input,select,textarea,[role=button]")) return;
+                            if (window.getSelection()?.toString()) return;
+                            if (e.metaKey || e.ctrlKey) window.open(href, "_blank", "noopener");
+                            else router.push(href);
+                          }
+                        : undefined
+                    }
+                  >
                     {row.getAllCells().map((cell, i) => {
                       const meta = (cell.column.columnDef.meta ?? {}) as ColumnMeta;
                       return (
@@ -192,12 +208,11 @@ export function DataTable<T extends RowData>({
                           className={cn("py-1.5", meta.align === "right" && "text-right tabular-nums", meta.className)}
                         >
                           {href && i === 0 && (
-                            // stretched link: whole row navigates, inner buttons/links still work (z-10)
-                            <Link href={href} className="absolute inset-0" aria-label="Open" tabIndex={-1} />
+                            <Link href={href} className="sr-only focus:not-sr-only focus:mr-2 focus:underline">
+                              Open
+                            </Link>
                           )}
-                          <span className="relative [&_a]:relative [&_a]:z-10 [&_button]:relative [&_button]:z-10">
-                            <table.FlexRender cell={cell} />
-                          </span>
+                          <table.FlexRender cell={cell} />
                         </TableCell>
                       );
                     })}

@@ -53,8 +53,8 @@ export function useUrlFilters<K extends string>(keys: readonly K[], defaults: Pa
 }
 
 /** Drops empty values so they don't reach the query string / cache key. */
-export function compact<T extends Record<string, unknown>>(o: T): Partial<T> {
-  const out: Partial<T> = {};
+export function compact<T extends Record<string, unknown>>(o: T): { [K in keyof T]?: Exclude<T[K], "" | null> } {
+  const out: { [K in keyof T]?: Exclude<T[K], "" | null> } = {};
   for (const [k, v] of Object.entries(o)) if (v !== "" && v !== undefined && v !== null) (out as Record<string, unknown>)[k] = v;
   return out;
 }
