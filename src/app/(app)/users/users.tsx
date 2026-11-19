@@ -19,12 +19,14 @@ import { FormDialog, FormField } from "@/components/form-dialog";
 import { HistoryLink } from "@/components/history-link";
 import { GatedButton, RequireOp } from "@/components/permission";
 import { PageHeader } from "@/components/states";
+import { ResendInviteButton, showInvitationToast } from "./resend-invite";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 type User = components["schemas"]["AdminUser"];
+type SaveResult = { kind: "updated"; u: User } | { kind: "invited"; u: components["schemas"]["InvitedAdminUser"] };
 type Role = components["schemas"]["AdminRole"];
 type Permission = components["schemas"]["Permission"];
 
@@ -56,7 +58,7 @@ function parseDepartments(s: string): string[] {
 }
 
 /** Invite or edit. The server refuses grants beyond your own permissions; its message is shown. */
-function UserDialog({ user, open, onOpenChange }: { user?: User; open: boolean; onOpenChange(o: boolean): void }) {
+export function UserDialog({ user, open, onOpenChange }: { user?: User; open: boolean; onOpenChange(o: boolean): void }) {
   const qc = useQueryClient();
   const me = useMe();
   const form = useForm<Values>({
@@ -67,7 +69,7 @@ function UserDialog({ user, open, onOpenChange }: { user?: User; open: boolean; 
   });
   const role = useWatch({ control: form.control, name: "role" });
   const m = useMutation({
-    mutationFn: (v: Values) => {
+    mutationFn: (v: Values): Promise<SaveResult> => {
       const body = {
         name: v.name,
         role: v.role,
@@ -75,14 +77,16 @@ function UserDialog({ user, open, onOpenChange }: { user?: User; open: boolean; 
         departments: v.role === "HEAD_OF_DEPARTMENT" ? parseDepartments(v.departments) : [],
       };
       return user
-        ? call(api.PATCH("/v1/admin/users/{id}", { params: { path: { id: user.id } }, body }))
-        : call(api.POST("/v1/admin/users", { body: { ...body, email: v.email.trim().toLowerCase() } }));
+        ? call(api.PATCH("/v1/admin/users/{id}", { params: { path: { id: user.id } }, body })).then((u) => ({ kind: "updated" as const, u }))
+        : call(api.POST("/v1/admin/users", { body: { ...body, email: v.email.trim().toLowerCase() } })).then((u) => ({ kind: "invited" as const, u }));
     },
     meta: { inlineError: true },
-    onSuccess: (u) => {
+    onSuccess: (r) => {
       void qc.invalidateQueries({ queryKey: qk.users });
+      if (user) void qc.invalidateQueries({ queryKey: qk.user(user.id) });
       onOpenChange(false);
-      toast.success(user ? "Admin updated" : `Invited ${u.email}. They can sign in with that email; the invite binds on first sign-in.`);
+      if (r.kind === "invited") showInvitationToast(qc, r.u);
+      else toast.success("Admin updated");
     },
   });
   const e = form.formState.errors;
@@ -91,7 +95,7 @@ function UserDialog({ user, open, onOpenChange }: { user?: User; open: boolean; 
       open={open}
       onOpenChange={(o) => (m.reset(), onOpenChange(o))}
       title={user ? `Edit ${user.email}` : "Invite an admin"}
-      description={user ? undefined : "They sign in with Supabase using this email. You can only grant permissions you have yourself."}
+      description={user ? undefined : "Supabase emails them an invite link to choose a password. You can only grant permissions you have yourself."}
       submitLabel={user ? "Save" : "Send invite"}
       pending={m.isPending}
       error={m.error}
@@ -158,7 +162,7 @@ function UserDialog({ user, open, onOpenChange }: { user?: User; open: boolean; 
   );
 }
 
-function ActiveToggle({ user }: { user: User }) {
+export function ActiveToggle({ user }: { user: User }) {
   const qc = useQueryClient();
   const me = useMe();
   const [open, setOpen] = useState(false);
@@ -198,7 +202,7 @@ function ActiveToggle({ user }: { user: User }) {
   );
 }
 
-function EditButton({ user }: { user: User }) {
+export function EditButton({ user }: { user: User }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -207,6 +211,19 @@ function EditButton({ user }: { user: User }) {
       </GatedButton>
       {open && <UserDialog user={user} open={open} onOpenChange={setOpen} />}
     </>
+  );
+}
+
+export function userState(u: User): "Active" | "Invited · not signed in" | "Deactivated" {
+  return !u.active ? "Deactivated" : u.authUserId === null ? "Invited · not signed in" : "Active";
+}
+
+export function UserStateBadge({ user }: { user: User }) {
+  const s = userState(user);
+  return (
+    <Badge variant="outline" className={s === "Deactivated" ? "text-muted-foreground" : s === "Active" ? "" : "border-amber-500/50 text-amber-800 dark:text-amber-300"}>
+      {s}
+    </Badge>
   );
 }
 
@@ -228,21 +245,14 @@ const columns = [
     header: "Extra permissions",
     cell: (c) => <span className="block max-w-56 truncate font-mono text-[11px]" title={c.getValue()}>{c.getValue() || "—"}</span>,
   }),
-  col.accessor((u) => (u.active ? (u.authUserId ? "Active" : "Invited") : "Deactivated"), {
-    id: "state",
-    header: "State",
-    cell: (c) => (
-      <Badge variant="outline" className={c.getValue() === "Deactivated" ? "text-muted-foreground" : c.getValue() === "Invited" ? "border-amber-500/50" : ""}>
-        {c.getValue()}
-      </Badge>
-    ),
-  }),
+  col.accessor(userState, { id: "state", header: "State", cell: (c) => <UserStateBadge user={c.row.original} /> }),
   col.accessor((u) => u.lastLoginAt ?? "", { id: "lastLogin", header: "Last sign-in", cell: (c) => <DateTime iso={c.row.original.lastLoginAt} /> }),
   col.display({
     id: "actions",
     header: "",
     cell: (c) => (
       <div className="flex items-center justify-end gap-1">
+        <ResendInviteButton user={c.row.original} />
         <HistoryLink entity="AdminUser" entityId={c.row.original.id} iconOnly />
         <EditButton user={c.row.original} />
         <ActiveToggle user={c.row.original} />
@@ -265,7 +275,16 @@ function Page() {
           </GatedButton>
         }
       />
-      <DataTable columns={columns} rows={q.data} getRowId={(u) => u.id} isLoading={q.isPending} error={q.error} onRetry={() => void q.refetch()} emptyTitle="No admins" />
+      <DataTable
+        columns={columns}
+        rows={q.data}
+        getRowId={(u) => u.id}
+        isLoading={q.isPending}
+        error={q.error}
+        onRetry={() => void q.refetch()}
+        rowHref={(u) => `/users/${u.id}`}
+        emptyTitle="No admins"
+      />
       {invite && <UserDialog open={invite} onOpenChange={setInvite} />}
     </>
   );

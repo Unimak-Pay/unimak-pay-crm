@@ -302,10 +302,33 @@ export interface paths {
         get: operations["adminListUsers"];
         put?: never;
         /**
-         * Invite an admin (they bind on first Supabase login)
-         * @description You cannot grant a role or permission you don't have yourself.
+         * Invite an admin (Supabase emails them; they bind on first sign-in)
+         * @description Creates the admin, then asks Supabase Auth to email an invite link (needs `SUPABASE_SERVICE_ROLE_KEY`;
+         *     the link opens `ADMIN_INVITE_REDIRECT_URL`, or the Supabase Site URL, where they set a password).
+         *     The admin is created even if the email fails: check `invitation.status` and re-send with
+         *     `POST /v1/admin/users/{id}/invite`. You cannot grant a role or permission you don't have yourself.
          */
         post: operations["adminCreateUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{id}/invite": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-send the Supabase invite email
+         * @description Only for an active admin who hasn't signed in yet (409 otherwise). Audited as `admin_user.invite`.
+         */
+        post: operations["adminResendInvite"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1209,6 +1232,20 @@ export interface components {
              * @enum {string}
              */
             aal: "aal1" | "aal2";
+        };
+        InviteOutcome: {
+            /**
+             * @description SENT: Supabase emailed the invite link. ALREADY_REGISTERED: the email already has a sign-in, they just sign in.
+             *     NOT_CONFIGURED: no service role key on the backend, nothing sent. FAILED: Supabase refused (e.g. email rate limit) — re-send.
+             * @enum {string}
+             */
+            status: "SENT" | "ALREADY_REGISTERED" | "NOT_CONFIGURED" | "FAILED";
+            /** @description Why, for anything but SENT. */
+            message?: string;
+        };
+        /** @description The admin user and what happened to the invite email. */
+        InvitedAdminUser: components["schemas"]["AdminUser"] & {
+            invitation: components["schemas"]["InviteOutcome"];
         };
         /** @description A payment row with its fee and payer. */
         AdminPayment: components["schemas"]["Payment"] & {
@@ -2465,11 +2502,37 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AdminUser"];
+                    "application/json": components["schemas"]["InvitedAdminUser"];
                 };
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    adminResendInvite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Invitation outcome */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitedAdminUser"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
         };
     };
@@ -3934,6 +3997,7 @@ export const payer_payerKindValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const obligationStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Obligation"]["status"]> = ["OPEN", "PAID"];
 export const paymentStatusViewPayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PaymentStatusView"]["payer"]["kind"]> = ["applicant", "student"];
 export const adminPrincipalAalValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AdminPrincipal"]["aal"]> = ["aal1", "aal2"];
+export const inviteOutcomeStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["InviteOutcome"]["status"]> = ["SENT", "ALREADY_REGISTERED", "NOT_CONFIGURED", "FAILED"];
 export const webhookAckResultValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["WebhookAck"]["result"]> = ["PROCESSED", "IGNORED", "UNMATCHED", "DUPLICATE"];
 export const adminRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AdminRole"]> = ["SUPER_ADMIN", "BURSAR", "FINANCE_OFFICER", "HEAD_OF_DEPARTMENT", "AUDITOR"];
 export const channelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Channel"]> = ["USSD", "DOTS"];

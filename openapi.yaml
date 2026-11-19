@@ -381,8 +381,12 @@ paths:
     post:
       operationId: adminCreateUser
       tags: [Admin · Users & audit]
-      summary: Invite an admin (they bind on first Supabase login)
-      description: You cannot grant a role or permission you don't have yourself.
+      summary: Invite an admin (Supabase emails them; they bind on first sign-in)
+      description: |
+        Creates the admin, then asks Supabase Auth to email an invite link (needs `SUPABASE_SERVICE_ROLE_KEY`;
+        the link opens `ADMIN_INVITE_REDIRECT_URL`, or the Supabase Site URL, where they set a password).
+        The admin is created even if the email fails: check `invitation.status` and re-send with
+        `POST /v1/admin/users/{id}/invite`. You cannot grant a role or permission you don't have yourself.
       x-permission: users.manage
       security: [{ adminJwt: [] }]
       requestBody:
@@ -399,9 +403,25 @@ paths:
                 extraPermissions: { type: array, maxItems: 30, items: { $ref: '#/components/schemas/Permission' } }
                 departments: { type: array, maxItems: 30, items: { type: string, maxLength: 50 }, description: 'For HEAD_OF_DEPARTMENT.' }
       responses:
-        '201': { description: Invited, content: { application/json: { schema: { $ref: '#/components/schemas/AdminUser' } } } }
+        '201': { description: Invited, content: { application/json: { schema: { $ref: '#/components/schemas/InvitedAdminUser' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/users/{id}/invite:
+    post:
+      operationId: adminResendInvite
+      tags: [Admin · Users & audit]
+      summary: Re-send the Supabase invite email
+      description: Only for an active admin who hasn't signed in yet (409 otherwise). Audited as `admin_user.invite`.
+      x-permission: users.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Invitation outcome, content: { application/json: { schema: { $ref: '#/components/schemas/InvitedAdminUser' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
   /v1/admin/users/{id}:
@@ -1513,6 +1533,25 @@ components:
         departments: { type: array, items: { type: string } }
         departmentScoped: { type: boolean, description: 'true for HEAD_OF_DEPARTMENT: payments are limited to `departments`.' }
         aal: { type: string, enum: [aal1, aal2], description: Supabase authenticator assurance level }
+    InviteOutcome:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [SENT, ALREADY_REGISTERED, NOT_CONFIGURED, FAILED]
+          description: |
+            SENT: Supabase emailed the invite link. ALREADY_REGISTERED: the email already has a sign-in, they just sign in.
+            NOT_CONFIGURED: no service role key on the backend, nothing sent. FAILED: Supabase refused (e.g. email rate limit) — re-send.
+        message: { type: string, description: 'Why, for anything but SENT.' }
+    InvitedAdminUser:
+      description: The admin user and what happened to the invite email.
+      allOf:
+        - $ref: '#/components/schemas/AdminUser'
+        - type: object
+          required: [invitation]
+          properties:
+            invitation: { $ref: '#/components/schemas/InviteOutcome' }
     AdminPayment:
       description: A payment row with its fee and payer.
       allOf:

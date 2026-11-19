@@ -43,6 +43,7 @@ export const OPERATIONS = {
   adminRenameFeeType: { method: "patch", path: "/v1/admin/fee-types/{id}", permission: "fees.manage" },
   adminReplayEvent: { method: "post", path: "/v1/admin/reconciliation/webhook-events/{id}/replay", permission: "reconciliation.manage" },
   adminReportsSummary: { method: "get", path: "/v1/admin/reports/summary", permission: "reports.read" },
+  adminResendInvite: { method: "post", path: "/v1/admin/users/{id}/invite", permission: "users.manage" },
   adminResolveEvent: { method: "post", path: "/v1/admin/reconciliation/webhook-events/{id}/resolve", permission: "reconciliation.manage" },
   adminResolveItem: { method: "post", path: "/v1/admin/reconciliation/items/{id}/resolve", permission: "reconciliation.manage" },
   adminRetryOutbox: { method: "post", path: "/v1/admin/outbox/{id}/retry", permission: "outbox.retry" },

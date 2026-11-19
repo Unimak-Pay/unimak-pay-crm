@@ -100,6 +100,11 @@ export function createDb() {
     extraPermissions: [], departments: [], active: true, lastLoginAt: null, createdBy: users[0].id,
     createdAt: iso(NOW - 2 * DAY), updatedAt: iso(NOW - 2 * DAY),
   });
+  users.push({
+    id: uuid(1), email: "race@unimak.test", authUserId: null, name: "Signs In Meanwhile", role: "AUDITOR",
+    extraPermissions: [], departments: [], active: true, lastLoginAt: null, createdBy: users[0].id,
+    createdAt: iso(NOW - DAY), updatedAt: iso(NOW - DAY),
+  });
 
   const feeTypes: S["FeeType"][] = [];
   const accounts: S["FinancialAccount"][] = [];
