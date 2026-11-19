@@ -270,6 +270,10 @@ function createAccountFor(ft: S["FeeType"]): S["FinancialAccount"] {
   return a;
 }
 
+/** Idempotency keys of every POST /payouts, in order (read by e2e via window.__mockPayoutAttempts). */
+const mockPayoutAttempts: string[] = [];
+if (typeof window !== "undefined") (window as unknown as { __mockPayoutAttempts: string[] }).__mockPayoutAttempts = mockPayoutAttempts;
+
 /** Simulated Monime: submitted payouts complete ~6 s later (shows the polling). */
 const payoutSubmittedAt = new Map<string, number>();
 function advancePayout(p: S["Payout"]) {
@@ -657,6 +661,12 @@ export const apiHandlers = [
     if (!b.accountNumber || !/^\d{4,34}$/.test(b.accountNumber)) errors.push("accountNumber must be 4 to 34 digits");
     if (!b.idempotencyKey || b.idempotencyKey.length < 8) errors.push("idempotencyKey must be longer than or equal to 8 characters");
     if (errors.length) return invalid(...errors);
+    // e2e hook: record every key; "SIMULATE_503" in the narration fails the first attempt per key
+    // (Monime down, nothing created) so the UI's retry-with-the-same-key path can be tested.
+    mockPayoutAttempts.push(b.idempotencyKey!);
+    if (b.narration?.includes("SIMULATE_503") && mockPayoutAttempts.filter((k) => k === b.idempotencyKey).length === 1) {
+      return fail(503, "UPSTREAM_UNAVAILABLE", "Monime is unavailable (simulated)");
+    }
     const existing = db.payouts.find((p) => p.idempotencyKey === b.idempotencyKey);
     if (existing) {
       const same = existing.amount === String(b.amount) && existing.accountNumber === b.accountNumber;

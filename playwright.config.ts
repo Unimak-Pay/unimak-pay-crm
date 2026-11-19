@@ -7,12 +7,14 @@ export default defineConfig({
   fullyParallel: true,
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? "github" : "list",
-  use: { baseURL: "http://localhost:3005", trace: "on-first-retry" },
+  use: { baseURL: "http://localhost:3217", trace: "on-first-retry" },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "pnpm next dev --port 3005",
-    url: "http://localhost:3005/sign-in",
+    command: "pnpm next dev --port 3217",
+    url: "http://localhost:3217/sign-in",
     reuseExistingServer: !process.env.CI,
+    stdout: "ignore",
+    stderr: "pipe",
     timeout: 120_000,
     env: {
       NEXT_PUBLIC_API_MOCKING: "msw",
