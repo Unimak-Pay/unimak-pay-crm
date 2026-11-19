@@ -7,6 +7,7 @@ import { api, call, download } from "@/api/client";
 import { errorMessage } from "@/api/errors";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
+import { channelValues, componentsParametersSortValues, paymentStatusValues } from "@/api/schema.gen";
 import { useMe } from "@/auth/auth-provider";
 import { columnsFor, DataTable, minorSortValue } from "@/components/data-table";
 import { DayRangeFilter, FilterBar, FilterSearch, FilterSelect } from "@/components/filters";
@@ -21,8 +22,8 @@ type Payment = components["schemas"]["AdminPayment"];
 type Sort = NonNullable<components["parameters"]["Sort"]>;
 
 const KEYS = ["status", "channel", "feeType", "payerRef", "ref", "from", "to", "sort"] as const;
-const STATUSES: components["schemas"]["PaymentStatus"][] = ["INITIATED", "PENDING", "COMPLETED", "FAILED", "EXPIRED"];
-const SORTS: Sort[] = ["createdAt", "-createdAt", "amount", "-amount"];
+const STATUSES = paymentStatusValues;
+const SORTS = componentsParametersSortValues;
 
 const col = columnsFor<Payment>();
 const columns = [
@@ -92,7 +93,7 @@ function List() {
   const me = useMe();
   const canOp = useCanOp();
   const { values, set, reset, active } = useUrlFilters(KEYS);
-  const sort: Sort = (SORTS as string[]).includes(values.sort) ? (values.sort as Sort) : "-createdAt";
+  const sort: Sort = (SORTS as readonly string[]).includes(values.sort) ? (values.sort as Sort) : "-createdAt";
   const query = filtersToQuery(values);
   const list = useCursorList(qk.payments({ ...query, sort }), async (cursor) =>
     call(api.GET("/v1/admin/payments", { params: { query: { ...query, sort, cursor, limit: 50 } } })),
@@ -119,7 +120,7 @@ function List() {
         />
         <FilterSearch label="Payer (student / applicant ref)" placeholder="UNI-2025-0002" value={values.payerRef} onChange={(v) => set({ payerRef: v })} />
         <FilterSelect label="Status" value={values.status} onChange={(v) => set({ status: v })} options={STATUSES} />
-        <FilterSelect label="Channel" value={values.channel} onChange={(v) => set({ channel: v })} options={["USSD", "DOTS"]} />
+        <FilterSelect label="Channel" value={values.channel} onChange={(v) => set({ channel: v })} options={channelValues} />
         <FilterSelect
           label="Fee type"
           value={values.feeType}

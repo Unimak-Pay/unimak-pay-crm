@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { api, call } from "@/api/client";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
+import { outboxStatusValues } from "@/api/schema.gen";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { columnsFor, DataTable } from "@/components/data-table";
 import { FilterBar, FilterSelect } from "@/components/filters";
@@ -23,7 +24,7 @@ import { compact, useUrlFilters } from "@/hooks/use-url-filters";
 
 type Msg = components["schemas"]["OutboxMessage"];
 type OutboxStatus = components["schemas"]["OutboxStatus"];
-const STATUSES: OutboxStatus[] = ["PENDING", "SENT", "DEAD"];
+const STATUSES = outboxStatusValues;
 const KEYS = ["status"] as const;
 
 const MESSAGE_EFFECT: Record<string, string> = {
@@ -84,7 +85,7 @@ const columns = [
 
 function List() {
   const { values, set, reset, active } = useUrlFilters(KEYS);
-  const status = (STATUSES as string[]).includes(values.status) ? (values.status as OutboxStatus) : undefined;
+  const status = (STATUSES as readonly string[]).includes(values.status) ? (values.status as OutboxStatus) : undefined;
   const list = useCursorList(qk.outbox(compact({ status })), (cursor) => call(api.GET("/v1/admin/outbox", { params: { query: { status, cursor, limit: 50 } } })));
   return (
     <>

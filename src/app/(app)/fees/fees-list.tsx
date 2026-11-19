@@ -10,6 +10,7 @@ import { z } from "zod";
 import { api, call } from "@/api/client";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
+import { feeStatusValues } from "@/api/schema.gen";
 import { columnsFor, DataTable } from "@/components/data-table";
 import { FilterBar, FilterSelect } from "@/components/filters";
 import { Day, StatusBadge } from "@/components/format";
@@ -26,7 +27,7 @@ import { formatSleOrDash } from "@/lib/money";
 type Fee = components["schemas"]["FeeListItem"];
 type FeeStatus = components["schemas"]["FeeStatus"];
 const KEYS = ["feeType", "status"] as const;
-const STATUSES: FeeStatus[] = ["DRAFT", "ACTIVE", "CLOSED"];
+const STATUSES = feeStatusValues;
 
 const createSchema = z
   .object({

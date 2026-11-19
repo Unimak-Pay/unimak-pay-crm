@@ -5,6 +5,7 @@ import Link from "next/link";
 import { api, call } from "@/api/client";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
+import { reconciliationItemStatusValues, reconciliationRunStatusValues, webhookEventStatusValues } from "@/api/schema.gen";
 import { columnsFor, DataTable } from "@/components/data-table";
 import { FilterBar, FilterSearch, FilterSelect } from "@/components/filters";
 import { DateTime, Money, StatusBadge } from "@/components/format";
@@ -116,12 +117,12 @@ function Attention({ s }: { s: Summary }) {
   );
 }
 
-const ITEM_STATUSES: S["ReconciliationItemStatus"][] = ["OPEN", "AUTO_RESOLVED", "RESOLVED"];
-const RUN_STATUSES: S["ReconciliationRunStatus"][] = ["RUNNING", "COMPLETED", "FAILED"];
-const EVENT_STATUSES: S["WebhookEventStatus"][] = ["RECEIVED", "PROCESSED", "IGNORED", "UNMATCHED", "FAILED"];
+const ITEM_STATUSES = reconciliationItemStatusValues;
+const RUN_STATUSES = reconciliationRunStatusValues;
+const EVENT_STATUSES = webhookEventStatusValues;
 
 function ItemsTab({ values, set }: { values: Record<(typeof KEYS)[number], string>; set(p: Partial<Record<(typeof KEYS)[number], string>>): void }) {
-  const status = (ITEM_STATUSES as string[]).includes(values.status) ? (values.status as S["ReconciliationItemStatus"]) : undefined;
+  const status = (ITEM_STATUSES as readonly string[]).includes(values.status) ? (values.status as S["ReconciliationItemStatus"]) : undefined;
   const kind = values.kind || undefined;
   const list = useCursorList(qk.items(compact({ status, kind })), (cursor) =>
     call(api.GET("/v1/admin/reconciliation/items", { params: { query: { status, kind, cursor, limit: 50 } } })),
@@ -150,7 +151,7 @@ function ItemsTab({ values, set }: { values: Record<(typeof KEYS)[number], strin
 }
 
 function RunsTab({ values, set }: { values: Record<(typeof KEYS)[number], string>; set(p: Partial<Record<(typeof KEYS)[number], string>>): void }) {
-  const status = (RUN_STATUSES as string[]).includes(values.runStatus) ? (values.runStatus as S["ReconciliationRunStatus"]) : undefined;
+  const status = (RUN_STATUSES as readonly string[]).includes(values.runStatus) ? (values.runStatus as S["ReconciliationRunStatus"]) : undefined;
   const list = useCursorList(qk.runs(compact({ status })), (cursor) => call(api.GET("/v1/admin/reconciliation/runs", { params: { query: { status, cursor, limit: 50 } } })));
   return (
     <>
@@ -175,7 +176,7 @@ function RunsTab({ values, set }: { values: Record<(typeof KEYS)[number], string
 }
 
 function EventsTab({ values, set }: { values: Record<(typeof KEYS)[number], string>; set(p: Partial<Record<(typeof KEYS)[number], string>>): void }) {
-  const status = (EVENT_STATUSES as string[]).includes(values.evStatus) ? (values.evStatus as S["WebhookEventStatus"]) : undefined;
+  const status = (EVENT_STATUSES as readonly string[]).includes(values.evStatus) ? (values.evStatus as S["WebhookEventStatus"]) : undefined;
   const type = values.type || undefined;
   const unresolved = values.unresolved === "true" ? true : undefined;
   const list = useCursorList(qk.webhookEvents(compact({ status, type, unresolved })), (cursor) =>

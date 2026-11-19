@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { api, call } from "@/api/client";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
+import { componentsParametersSortValues, transferStatusValues } from "@/api/schema.gen";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { columnsFor, DataTable, minorSortValue } from "@/components/data-table";
 import { FilterBar, FilterSelect } from "@/components/filters";
@@ -25,8 +26,8 @@ import { formatSle } from "@/lib/money";
 type Transfer = components["schemas"]["Transfer"];
 type TransferStatus = components["schemas"]["TransferStatus"];
 type Sort = NonNullable<components["parameters"]["Sort"]>;
-const STATUSES: TransferStatus[] = ["PENDING", "SUBMITTED", "COMPLETED", "FAILED"];
-const SORTS: Sort[] = ["createdAt", "-createdAt", "amount", "-amount"];
+const STATUSES = transferStatusValues;
+const SORTS = componentsParametersSortValues;
 const KEYS = ["status", "sort"] as const;
 
 /** Retry a FAILED transfer, behind a confirm that names the money movement. */
@@ -88,8 +89,8 @@ const columns = [
 
 function List() {
   const { values, set, reset, active } = useUrlFilters(KEYS);
-  const sort: Sort = (SORTS as string[]).includes(values.sort) ? (values.sort as Sort) : "-createdAt";
-  const status = (STATUSES as string[]).includes(values.status) ? (values.status as TransferStatus) : undefined;
+  const sort: Sort = (SORTS as readonly string[]).includes(values.sort) ? (values.sort as Sort) : "-createdAt";
+  const status = (STATUSES as readonly string[]).includes(values.status) ? (values.status as TransferStatus) : undefined;
   const list = useCursorList(qk.transfers(compact({ status, sort })), (cursor) =>
     call(api.GET("/v1/admin/transfers", { params: { query: { status, sort, cursor, limit: 50 } } })),
   );

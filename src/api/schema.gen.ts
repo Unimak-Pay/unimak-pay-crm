@@ -3917,3 +3917,39 @@ export interface operations {
         };
     };
 }
+type FlattenedDeepRequired<T> = {
+    [K in keyof T]-?: FlattenedDeepRequired<T[K] extends unknown[] | undefined | null ? Extract<T[K], unknown[]>[number] : T[K]>;
+};
+type ReadonlyArray<T> = [
+    Exclude<T, undefined>
+] extends [
+    unknown[]
+] ? Readonly<Exclude<T, undefined>> : Readonly<Exclude<T, undefined>[]>;
+export const pathsV1AdminFeeTypesPostRequestBodyContentApplicationJsonPayerKindValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/fee-types"]["post"]["requestBody"]["content"]["application/json"]["payerKind"]> = ["APPLICANT", "STUDENT"];
+export const pathsV1AdminFeeTypesPostRequestBodyContentApplicationJsonRecurrenceValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/fee-types"]["post"]["requestBody"]["content"]["application/json"]["recurrence"]> = ["ONCE", "PER_YEAR"];
+export const pathsV1AdminFeesIdPreviewGetParametersQueryKindValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/fees/{id}/preview"]["get"]["parameters"]["query"]["kind"]> = ["applicant", "student"];
+export const pathsDevMonimeSimulateWebhookPostRequestBodyContentApplicationJsonOutcomeValues: ReadonlyArray<FlattenedDeepRequired<paths>["/dev/monime/simulate-webhook"]["post"]["requestBody"]["content"]["application/json"]["outcome"]> = ["completed", "failed", "expired"];
+export const permissionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Permission"]> = ["fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export", "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "accounts.manage", "payouts.read", "payouts.manage", "transfers.read", "transfers.retry", "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage"];
+export const payer_payerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Payer"]["kind"]> = ["applicant", "student"];
+export const obligationStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Obligation"]["status"]> = ["OPEN", "PAID"];
+export const paymentStatusViewPayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PaymentStatusView"]["payer"]["kind"]> = ["applicant", "student"];
+export const adminPrincipalAalValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AdminPrincipal"]["aal"]> = ["aal1", "aal2"];
+export const webhookAckResultValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["WebhookAck"]["result"]> = ["PROCESSED", "IGNORED", "UNMATCHED", "DUPLICATE"];
+export const adminRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AdminRole"]> = ["SUPER_ADMIN", "BURSAR", "FINANCE_OFFICER", "HEAD_OF_DEPARTMENT", "AUDITOR"];
+export const channelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Channel"]> = ["USSD", "DOTS"];
+export const collectionMethodValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CollectionMethod"]> = ["PAYMENT_CODE", "USSD_FLOW"];
+export const feeStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FeeStatus"]> = ["DRAFT", "ACTIVE", "CLOSED"];
+export const financialAccountPurposeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FinancialAccountPurpose"]> = ["FEE_TYPE", "PLATFORM"];
+export const ledgerEntryTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["LedgerEntryType"]> = ["CHARGE", "PAYMENT", "ADJUSTMENT", "REFUND"];
+export const outboxStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OutboxStatus"]> = ["PENDING", "SENT", "DEAD"];
+export const payerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayerKind"]> = ["APPLICANT", "STUDENT"];
+export const paymentStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PaymentStatus"]> = ["INITIATED", "PENDING", "COMPLETED", "FAILED", "EXPIRED"];
+export const payoutStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayoutStatus"]> = ["REQUESTED", "SUBMITTED", "PROCESSING", "COMPLETED", "FAILED"];
+export const reconciliationItemStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReconciliationItemStatus"]> = ["OPEN", "AUTO_RESOLVED", "RESOLVED"];
+export const reconciliationRunStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReconciliationRunStatus"]> = ["RUNNING", "COMPLETED", "FAILED"];
+export const recurrenceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Recurrence"]> = ["ONCE", "PER_YEAR"];
+export const residencyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Residency"]> = ["LOCAL", "INTERNATIONAL"];
+export const transferStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["TransferStatus"]> = ["PENDING", "SUBMITTED", "COMPLETED", "FAILED"];
+export const webhookEventStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["WebhookEventStatus"]> = ["RECEIVED", "PROCESSED", "IGNORED", "UNMATCHED", "FAILED"];
+export const componentsParametersPayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["parameters"]["PayerKind"]> = ["applicant", "student"];
+export const componentsParametersSortValues: ReadonlyArray<FlattenedDeepRequired<components>["parameters"]["Sort"]> = ["createdAt", "-createdAt", "amount", "-amount"];

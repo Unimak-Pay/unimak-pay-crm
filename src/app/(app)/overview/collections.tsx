@@ -7,6 +7,7 @@ import { Bar, BarChart, CartesianGrid, Tooltip, XAxis, YAxis } from "recharts";
 import { api, call } from "@/api/client";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
+import { channelValues } from "@/api/schema.gen";
 import { DayRangeFilter, FilterBar, FilterSelect } from "@/components/filters";
 import { Money } from "@/components/format";
 import { useCanOp } from "@/components/permission";
@@ -245,7 +246,7 @@ export function Collections() {
       <FilterBar onReset={reset} active={active}>
         <DayRangeFilter from={f.from} to={f.to} maxDays={366} onChange={(r) => set(r)} />
         <FilterSelect label="Fee type" value={values.feeType} onChange={(v) => set({ feeType: v })} options={feeTypeOptions} />
-        <FilterSelect label="Channel" value={values.channel} onChange={(v) => set({ channel: v })} options={["USSD", "DOTS"]} />
+        <FilterSelect label="Channel" value={values.channel} onChange={(v) => set({ channel: v })} options={channelValues} />
       </FilterBar>
 
       {q.isPending ? (

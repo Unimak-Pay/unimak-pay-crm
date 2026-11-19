@@ -7,6 +7,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import { api, call } from "@/api/client";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
+import { componentsParametersSortValues, payoutStatusValues } from "@/api/schema.gen";
 import { columnsFor, DataTable, minorSortValue } from "@/components/data-table";
 import { FilterBar, FilterSelect } from "@/components/filters";
 import { CopyValue, DateTime, Money, StatusBadge } from "@/components/format";
@@ -23,8 +24,8 @@ import { formatSle, sleInWords } from "@/lib/money";
 type Payout = components["schemas"]["PayoutListItem"];
 type PayoutStatus = components["schemas"]["PayoutStatus"];
 type Sort = NonNullable<components["parameters"]["Sort"]>;
-const STATUSES: PayoutStatus[] = ["REQUESTED", "SUBMITTED", "PROCESSING", "COMPLETED", "FAILED"];
-const SORTS: Sort[] = ["createdAt", "-createdAt", "amount", "-amount"];
+const STATUSES = payoutStatusValues;
+const SORTS = componentsParametersSortValues;
 const KEYS = ["status", "sort"] as const;
 const FINAL = new Set<PayoutStatus>(["COMPLETED", "FAILED"]);
 
@@ -51,8 +52,8 @@ const columns = [
 function List() {
   const canOp = useCanOp();
   const { values, set, reset, active } = useUrlFilters(KEYS);
-  const sort: Sort = (SORTS as string[]).includes(values.sort) ? (values.sort as Sort) : "-createdAt";
-  const status = (STATUSES as string[]).includes(values.status) ? (values.status as PayoutStatus) : undefined;
+  const sort: Sort = (SORTS as readonly string[]).includes(values.sort) ? (values.sort as Sort) : "-createdAt";
+  const status = (STATUSES as readonly string[]).includes(values.status) ? (values.status as PayoutStatus) : undefined;
   const list = useCursorList(qk.payouts(compact({ status, sort })), (cursor) =>
     call(api.GET("/v1/admin/payouts", { params: { query: { status, sort, cursor, limit: 50 } } })),
   );
