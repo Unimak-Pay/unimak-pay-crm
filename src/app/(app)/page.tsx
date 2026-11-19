@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
+import { Overview } from "./overview/overview";
 
 export const metadata: Metadata = { title: "Overview" };
 
 export default function OverviewPage() {
-  return <h1 className="text-xl font-semibold">Overview</h1>;
+  return <Overview />;
 }

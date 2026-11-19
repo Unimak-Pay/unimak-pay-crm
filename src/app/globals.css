@@ -131,3 +131,10 @@
     @apply font-sans;
   }
 }
+/* Data viz: single-series collections chart (validated reference palette, slot 1). */
+:root {
+  --viz-series-1: #2a78d6;
+}
+.dark {
+  --viz-series-1: #3987e5;
+}

@@ -1,0 +1,37 @@
+/**
+ * TanStack Query keys: one root per endpoint family, filters last, so invalidating a root
+ * after a mutation refreshes every filtered variant.
+ */
+export const qk = {
+  me: ["me"] as const,
+  reconciliation: ["reconciliation"] as const,
+  runs: (f: object = {}) => ["reconciliation", "runs", f] as const,
+  run: (id: string) => ["reconciliation", "run", id] as const,
+  items: (f: object = {}) => ["reconciliation", "items", f] as const,
+  webhookEvents: (f: object = {}) => ["reconciliation", "webhook-events", f] as const,
+  webhookEvent: (id: string) => ["reconciliation", "webhook-event", id] as const,
+  accounts: ["financial-accounts"] as const,
+  banks: ["banks"] as const,
+  payments: (f: object = {}) => ["payments", "list", f] as const,
+  payment: (id: string) => ["payments", "detail", id] as const,
+  paymentsRoot: ["payments"] as const,
+  reports: (f: object) => ["reports", "summary", f] as const,
+  feeTypes: ["fee-types"] as const,
+  fees: (f: object = {}) => ["fees", "list", f] as const,
+  fee: (id: string) => ["fees", "detail", id] as const,
+  feesRoot: ["fees"] as const,
+  preview: (id: string, kind: string, ref: string) => ["fees", "preview", id, kind, ref] as const,
+  payouts: (f: object = {}) => ["payouts", "list", f] as const,
+  payout: (id: string) => ["payouts", "detail", id] as const,
+  payoutsRoot: ["payouts"] as const,
+  transfers: (f: object = {}) => ["transfers", "list", f] as const,
+  transfer: (id: string) => ["transfers", "detail", id] as const,
+  transfersRoot: ["transfers"] as const,
+  outbox: (f: object = {}) => ["outbox", "list", f] as const,
+  outboxMessage: (id: string) => ["outbox", "detail", id] as const,
+  outboxRoot: ["outbox"] as const,
+  users: ["users"] as const,
+  user: (id: string) => ["users", id] as const,
+  audit: (f: object = {}) => ["audit", f] as const,
+  auditRoot: ["audit"] as const,
+};
