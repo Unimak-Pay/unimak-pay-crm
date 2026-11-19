@@ -1,0 +1,2064 @@
+openapi: 3.1.0
+info:
+  title: UNIMAK Pay API
+  version: 1.0.0
+  summary: University of Makeni fee collection backend (Monime).
+  description: |
+    Fee lookup and payment for applicants and students, over USSD (Monime USSD flow)
+    and Dash Dots (channel API), plus the admin API behind the dashboard.
+
+    **Money** is always a string of SLE minor units (1 SLE = 100): `"150000"` = SLE 1,500.00.
+    Channel responses wrap it as `{ value, display }`.
+
+    **Errors.** Business errors:
+    `{ "error": { "code": "OBLIGATION_SETTLED", "message": "...", "details": {} } }`.
+    Validation and routing errors use the framework shape
+    `{ "statusCode": 400, "message": ["amount must be ..."], "error": "Bad Request" }`.
+
+    | code | HTTP |
+    |---|---|
+    | `NOT_FOUND`, `PAYER_NOT_FOUND` | 404 |
+    | `VALIDATION` | 400 |
+    | `UNAUTHENTICATED` | 401 |
+    | `FORBIDDEN`, `MFA_REQUIRED` | 403 |
+    | `AMBIGUOUS_RATE_RULE`, `OBLIGATION_SETTLED`, `FEE_NOT_ACTIVE`, `IDEMPOTENCY_CONFLICT`, `INVALID_STATE` | 409 |
+    | `NO_RATE_RULE`, `AMOUNT_BELOW_MIN_INSTALMENT`, `AMOUNT_EXCEEDS_PAYABLE`, `INSTALMENTS_NOT_ALLOWED` | 422 |
+    | `RATE_LIMITED` | 429 |
+    | `UPSTREAM_UNAVAILABLE` | 503 |
+
+    Keep this file in sync with the controllers: `test/e2e/openapi.e2e-spec.ts` fails when a
+    route exists in the app but not here (or the other way round).
+servers:
+  - url: https://unimak-pay-backend.vercel.app
+    description: Production
+  - url: http://localhost:3100
+    description: Local
+
+security:
+  - channelHmac: []
+
+tags:
+  - name: Channel
+    description: Dash Dots and other payment channels. HMAC-signed (`channelHmac`).
+  - name: Admin · Reports
+    description: Collection totals for the dashboard.
+  - name: Admin · Payments
+  - name: Admin · Fee setup
+    description: Fee types (each with its own Monime financial account), fees and their rules.
+  - name: Admin · Treasury
+    description: Financial accounts, commission transfers, bank payouts.
+  - name: Admin · Reconciliation
+  - name: Admin · Users & audit
+  - name: Monime
+    description: Called by Monime (webhook, USSD flow exchange).
+  - name: Public
+  - name: Cron
+  - name: Dev
+    description: Only when `NODE_ENV` is not `production`.
+
+paths:
+  # ── Public ──────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      operationId: health
+      tags: [Public]
+      summary: Liveness
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { const: true } } }
+
+  /r/{verifyCode}:
+    get:
+      operationId: publicVerify
+      tags: [Public]
+      summary: Receipt verification page
+      description: Minimal HTML (masked name, amount, fee, date). `noindex`, `Cache-Control no-store`.
+      security: []
+      parameters:
+        - { name: verifyCode, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Valid receipt, content: { text/html: { schema: { type: string } } } }
+        '404': { description: Unknown code, content: { text/html: { schema: { type: string } } } }
+
+  # ── Channel API ─────────────────────────────────────────────────────────────
+  /v1/channel/payers/{kind}/{ref}:
+    get:
+      operationId: channelGetPayer
+      tags: [Channel]
+      summary: Look up a payer
+      description: Fetches from the university portal (cached) and creates any missing obligations.
+      parameters: [{ $ref: '#/components/parameters/PayerKind' }, { $ref: '#/components/parameters/PayerRef' }]
+      responses:
+        '200': { description: Payer, content: { application/json: { schema: { $ref: '#/components/schemas/Payer' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/channel/payers/{kind}/{ref}/obligations:
+    get:
+      operationId: channelGetObligations
+      tags: [Channel]
+      summary: What the payer owes
+      parameters: [{ $ref: '#/components/parameters/PayerKind' }, { $ref: '#/components/parameters/PayerRef' }]
+      responses:
+        '200':
+          description: Payer and obligations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payer, obligations]
+                properties:
+                  payer: { $ref: '#/components/schemas/Payer' }
+                  obligations: { type: array, items: { $ref: '#/components/schemas/Obligation' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/channel/payers/{kind}/{ref}/receipts:
+    get:
+      operationId: channelGetReceipts
+      tags: [Channel]
+      summary: Receipts of a payer
+      parameters: [{ $ref: '#/components/parameters/PayerKind' }, { $ref: '#/components/parameters/PayerRef' }]
+      responses:
+        '200':
+          description: Receipts, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { receipts: { type: array, items: { $ref: '#/components/schemas/Receipt' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/channel/quotes:
+    post:
+      operationId: channelPostQuote
+      tags: [Channel]
+      summary: Validate an amount without creating anything
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [obligationId, amount, channel]
+              properties:
+                obligationId: { type: string, format: uuid }
+                amount: { $ref: '#/components/schemas/MinorAmount' }
+                channel: { $ref: '#/components/schemas/Channel' }
+      responses:
+        '200':
+          description: Valid amount
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  amount: { $ref: '#/components/schemas/MinorAmount' }
+                  payable: { $ref: '#/components/schemas/MinorAmount' }
+                  minInstalment: { $ref: '#/components/schemas/MinorAmount' }
+                  payerPays: { description: 'Always equal to amount: the payer never pays extra.', $ref: '#/components/schemas/MinorAmount' }
+                  valid: { const: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+
+  /v1/channel/payments:
+    post:
+      operationId: channelPostPayment
+      tags: [Channel]
+      summary: Start a payment
+      description: |
+        Places a hold on the obligation and creates a Monime payment code (15 minutes).
+        The payer approves by dialling `ussdCode`. Idempotent per client on `idempotencyKey`:
+        repeating the call returns the same payment (and retries Monime if it never got through).
+        Give the payer `paymentRef` to check the status later.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [obligationId, amount, payerPhone, channel, idempotencyKey]
+              properties:
+                obligationId: { type: string, format: uuid }
+                amount: { $ref: '#/components/schemas/MinorAmount' }
+                payerPhone: { type: string, pattern: '^\+?\d{8,15}$', example: '+23276123456', description: 'The payment code is restricted to this number.' }
+                channel: { $ref: '#/components/schemas/Channel' }
+                idempotencyKey: { type: string, minLength: 8, maxLength: 100 }
+      responses:
+        '201':
+          description: Payment started
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [paymentId, paymentRef, status, expiresAt]
+                properties:
+                  paymentId: { type: string, format: uuid }
+                  paymentRef: { $ref: '#/components/schemas/PaymentRef' }
+                  status: { $ref: '#/components/schemas/PaymentStatus' }
+                  expiresAt: { type: string, format: date-time }
+                  ussdCode: { type: [string, 'null'], example: '*715*1*7344331308#' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Upstream' }
+
+  /v1/channel/payments/status/{ref}:
+    get:
+      operationId: channelGetPaymentStatus
+      tags: [Channel]
+      summary: Payment status by what the payer holds
+      description: |
+        `ref` is our 8-digit payment ref or Monime's order number (from Monime's SMS).
+        Case, spaces and dashes are ignored. Works for payments from any channel; payer
+        details are masked.
+      parameters:
+        - { name: ref, in: path, required: true, schema: { type: string, examples: ['15540719', '3BMRXXXQXJW3'] } }
+      responses:
+        '200': { description: Status, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentStatusView' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/channel/payments/{id}:
+    get:
+      operationId: channelGetPayment
+      tags: [Channel]
+      summary: A payment created by the calling client
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Payment, content: { application/json: { schema: { $ref: '#/components/schemas/ChannelPayment' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ── Monime ──────────────────────────────────────────────────────────────────
+  /webhooks/monime:
+    post:
+      operationId: webhookReceive
+      tags: [Monime]
+      summary: Monime webhook
+      description: |
+        Signed with `Monime-Signature: t=<unix>,v1=<base64 HMAC-SHA256(secret, "<t>_" + raw body)>`.
+        Events: `payment.processing_completed`, `internal_transfer.completed|failed`,
+        `payout.completed|failed`, `financial_account.credited|debited`. Deduplicated on
+        `event.id`; business mismatches are acknowledged (200) and queued for reconciliation.
+      security: [{ monimeSignature: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event, data]
+              properties:
+                apiVersion: { type: string, example: caph.2025-08-23 }
+                event: { type: object, properties: { id: { type: string }, name: { type: string }, timestamp: { type: string } } }
+                object: { type: object, properties: { id: { type: string }, type: { type: string } } }
+                data: { type: object, description: 'The Monime object (Payment, InternalTransfer, Payout, account movement).' }
+      responses:
+        '200': { description: Acknowledged, content: { application/json: { schema: { $ref: '#/components/schemas/WebhookAck' } } } }
+        '400': { description: Malformed payload }
+        '401': { description: Missing or bad signature }
+
+  /v1/ussd/exchange/{token}:
+    get:
+      operationId: ussdHealth
+      tags: [Monime]
+      summary: USSD exchange health
+      parameters: [{ $ref: '#/components/parameters/UssdToken' }]
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { status: { const: ok }, encryption: { type: string }, keys: { type: integer } } }
+        '404': { description: Wrong token }
+    post:
+      operationId: ussdExchange
+      tags: [Monime]
+      summary: USSD flow exchange (Monime → us)
+      description: |
+        Called by the UNIMAK USSD flow on every `on_done: exchange` page. Encrypted per
+        Monime's USSD flow security: AES-128-GCM payload, key wrapped with our RSA public key
+        (RSA-OAEP-SHA256). The reply is `text/plain` base64, encrypted with the same AES key.
+        Decrypted request: `{ global: { sessionId, subscriberId, ... }, currentPage, flowData }`.
+        Decrypted reply: `{ action: "navigate", pageId, pageData }` or `{ action: "stop", message }`.
+        Requests are unsigned: the secret path token, server-side session state and rate
+        limits protect it.
+      parameters: [{ $ref: '#/components/parameters/UssdToken' }]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: 'Monime encrypted envelope (opaque).' }
+      responses:
+        '200': { description: Encrypted reply, content: { text/plain: { schema: { type: string, contentEncoding: base64 } } } }
+        '400': { description: Cannot decrypt }
+        '404': { description: Wrong token }
+
+  # ── Cron ────────────────────────────────────────────────────────────────────
+  /cron/outbox:
+    get:
+      operationId: cronOutbox
+      tags: [Cron]
+      summary: Dispatch due outbox messages
+      security: [{ cronSecret: [] }]
+      responses:
+        '200':
+          description: Sweep result
+          content:
+            application/json:
+              schema: { type: object, properties: { claimed: { type: integer }, sent: { type: integer }, retried: { type: integer }, dead: { type: integer } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /cron/expire-payments:
+    get:
+      operationId: cronExpirePayments
+      tags: [Cron]
+      summary: Expire open payments past expiresAt; delete USSD sessions older than 24 h
+      description: Also runs every 5 minutes in the database (Supabase pg_cron) and nightly.
+      security: [{ cronSecret: [] }]
+      responses:
+        '200':
+          description: Counts
+          content:
+            application/json:
+              schema: { type: object, properties: { expired: { type: integer }, ussdSessionsDeleted: { type: integer } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /cron/reconcile:
+    get:
+      operationId: cronReconcile
+      tags: [Cron]
+      summary: Nightly reconciliation of yesterday (UTC), then expiry and outbox sweeps
+      security: [{ cronSecret: [] }]
+      responses:
+        '200':
+          description: 'Run (or `{ skipped: true, runId }` if yesterday is already done), plus housekeeping'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skipped: { type: boolean }
+                  runId: { type: string, format: uuid }
+                  housekeeping: { type: object, properties: { expired: { type: integer }, ussdSessionsDeleted: { type: integer } } }
+                  outbox: { type: object, additionalProperties: { type: integer } }
+                additionalProperties: true
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ── Admin · users & audit ───────────────────────────────────────────────────
+  /v1/admin/me:
+    get:
+      operationId: adminMe
+      tags: [Admin · Users & audit]
+      summary: The signed-in admin and their effective permissions
+      security: [{ adminJwt: [] }]
+      responses:
+        '200': { description: Admin principal, content: { application/json: { schema: { $ref: '#/components/schemas/AdminPrincipal' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/users:
+    get:
+      operationId: adminListUsers
+      tags: [Admin · Users & audit]
+      summary: List admin users
+      x-permission: users.manage
+      security: [{ adminJwt: [] }]
+      responses:
+        '200': { description: Admin users, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AdminUser' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: adminCreateUser
+      tags: [Admin · Users & audit]
+      summary: Invite an admin (they bind on first Supabase login)
+      description: You cannot grant a role or permission you don't have yourself.
+      x-permission: users.manage
+      security: [{ adminJwt: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                name: { type: string, maxLength: 100 }
+                role: { $ref: '#/components/schemas/AdminRole' }
+                extraPermissions: { type: array, maxItems: 30, items: { $ref: '#/components/schemas/Permission' } }
+                departments: { type: array, maxItems: 30, items: { type: string, maxLength: 50 }, description: 'For HEAD_OF_DEPARTMENT.' }
+      responses:
+        '201': { description: Invited, content: { application/json: { schema: { $ref: '#/components/schemas/AdminUser' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/users/{id}:
+    get:
+      tags: [Admin · Users & audit]
+      operationId: adminGetUser
+      summary: An admin user
+      x-permission: users.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Admin user, content: { application/json: { schema: { $ref: '#/components/schemas/AdminUser' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: adminUpdateUser
+      tags: [Admin · Users & audit]
+      summary: Update an admin (role, permissions, departments, deactivate)
+      description: You cannot deactivate yourself, and there is always at least one active super admin.
+      x-permission: users.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 100 }
+                role: { $ref: '#/components/schemas/AdminRole' }
+                extraPermissions: { type: array, maxItems: 30, items: { $ref: '#/components/schemas/Permission' } }
+                departments: { type: array, maxItems: 30, items: { type: string, maxLength: 50 } }
+                active: { type: boolean }
+      responses:
+        '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/AdminUser' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/audit-log:
+    get:
+      operationId: adminAuditLog
+      tags: [Admin · Users & audit]
+      summary: Audit log (append-only)
+      x-permission: audit.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - { name: entity, in: query, schema: { type: string, maxLength: 50 }, example: Payout }
+        - { name: entityId, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: actorId, in: query, schema: { type: string, maxLength: 100 } }
+      responses:
+        '200': { description: Page, content: { application/json: { schema: { $ref: '#/components/schemas/AuditLogPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ── Admin · reports ─────────────────────────────────────────────────────────
+  /v1/admin/reports/summary:
+    get:
+      tags: [Admin · Reports]
+      operationId: adminReportsSummary
+      summary: Collection totals by day, fee type and channel; payment funnel; commission and payouts
+      description: |
+        - **collected**: COMPLETED payments by `completedAt` in the range (a late settlement counts on
+          the day Monime completed it). `monimeFees + platformFees + net = amount`.
+        - **byDay**: every day of the range, zero-filled. Days are UTC (= Africa/Freetown).
+        - **payments**: the funnel of payments *started* in the range, by current status. An open
+          payment past expiry counts as expired.
+        - **commission** / **payouts**: transfers / payouts created in the range. They are `null` unless
+          the admin has `transfers.read` / `payouts.read`, and always `null` for heads of department.
+        - Heads of department only see their departments' payments (`filters.departments`).
+      x-permission: reports.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date }, description: 'Inclusive. Default: 29 days before `to`.' }
+        - { name: to, in: query, schema: { type: string, format: date }, description: 'Inclusive. Default: today. At most 366 days in all.' }
+        - { name: feeType, in: query, schema: { type: string, maxLength: 20 }, example: TUITION }
+        - { name: channel, in: query, schema: { $ref: '#/components/schemas/Channel' } }
+      responses:
+        '200':
+          description: Summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  range:
+                    type: object
+                    properties:
+                      from: { type: string, format: date }
+                      to: { type: string, format: date }
+                      days: { type: integer }
+                      timezone: { type: string, example: Africa/Freetown (UTC) }
+                  filters:
+                    type: object
+                    properties:
+                      feeType: { type: [string, 'null'] }
+                      channel: { oneOf: [{ $ref: '#/components/schemas/Channel' }, { type: 'null' }] }
+                      departments: { type: [array, 'null'], items: { type: string } }
+                  collected:
+                    type: object
+                    properties:
+                      amount: { type: string, description: 'SLE minor units' }
+                      count: { type: integer }
+                      average: { type: string, description: 'SLE minor units' }
+                      monimeFees: { type: string, description: 'SLE minor units' }
+                      platformFees: { type: string, description: 'SLE minor units' }
+                      net: { type: string, description: 'SLE minor units' }
+                      lateSettlements: { type: integer, description: 'Completed after their hold expired.' }
+                  byDay:
+                    type: array
+                    items: { type: object, properties: { date: { type: string, format: date }, amount: { type: string, description: 'SLE minor units' }, count: { type: integer } } }
+                  byFeeType:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        feeTypeCode: { type: string }
+                        feeTypeName: { type: string }
+                        amount: { type: string, description: 'SLE minor units' }
+                        count: { type: integer }
+                        platformFees: { type: string, description: 'SLE minor units' }
+                        net: { type: string, description: 'SLE minor units' }
+                  byChannel:
+                    type: array
+                    items: { type: object, properties: { channel: { $ref: '#/components/schemas/Channel' }, amount: { type: string, description: 'SLE minor units' }, count: { type: integer } } }
+                  payments:
+                    type: object
+                    properties:
+                      started: { type: integer }
+                      completed: { $ref: '#/components/schemas/CountAmount' }
+                      pending: { $ref: '#/components/schemas/CountAmount' }
+                      failed: { $ref: '#/components/schemas/CountAmount' }
+                      expired: { $ref: '#/components/schemas/CountAmount' }
+                      completionRate: { type: [number, 'null'], minimum: 0, maximum: 1 }
+                  commission:
+                    type: [object, 'null']
+                    properties:
+                      transferred: { $ref: '#/components/schemas/CountAmount' }
+                      inFlight: { $ref: '#/components/schemas/CountAmount' }
+                      failed: { $ref: '#/components/schemas/CountAmount' }
+                  payouts:
+                    type: [object, 'null']
+                    properties:
+                      paidOut: { $ref: '#/components/schemas/CountAmount' }
+                      inFlight: { $ref: '#/components/schemas/CountAmount' }
+                      failed: { $ref: '#/components/schemas/CountAmount' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ── Admin · payments ────────────────────────────────────────────────────────
+  /v1/admin/payments:
+    get:
+      operationId: adminListPayments
+      tags: [Admin · Payments]
+      summary: List payments
+      description: Heads of department only see their departments' payments.
+      x-permission: payments.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/PaymentStatus' } }
+        - { name: channel, in: query, schema: { $ref: '#/components/schemas/Channel' } }
+        - { name: feeType, in: query, schema: { type: string, maxLength: 20 }, example: TUITION }
+        - { name: payerRef, in: query, schema: { type: string, maxLength: 64 }, description: 'Student ID or application ref.' }
+        - { name: ref, in: query, schema: { type: string, maxLength: 64 }, description: 'Our payment ref, Monime order number, or Monime payment id (spm-…).' }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200': { description: Page, content: { application/json: { schema: { $ref: '#/components/schemas/AdminPaymentPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/payments/export.csv:
+    get:
+      tags: [Admin · Payments]
+      operationId: adminExportPayments
+      summary: Download payments as CSV
+      description: |
+        Same filters as the list; oldest first; amounts in SLE (`1500.00`). At most 50,000 rows
+        (narrow the filters beyond that: 400 `VALIDATION`). Heads of department get only their
+        departments. Cells starting with `= + - @` are prefixed with `'` (no spreadsheet formulas).
+        UTF-8 with BOM. Every export is audited (`payments.export`).
+
+        Columns: created_at, completed_at, payment_ref, status, channel, collection_method, fee_type,
+        fee_name, payer_kind, payer_ref, payer_name, program, department, amount_sle, monime_fee_sle,
+        platform_fee_sle, net_sle, payer_phone, monime_order_number, monime_payment_id,
+        receipt_number, failure_reason, payment_id.
+      x-permission: payments.export
+      security: [{ adminJwt: [] }]
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/PaymentStatus' } }
+        - { name: channel, in: query, schema: { $ref: '#/components/schemas/Channel' } }
+        - { name: feeType, in: query, schema: { type: string, maxLength: 20 } }
+        - { name: payerRef, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: ref, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+      responses:
+        '200':
+          description: CSV file (`Content-Disposition` attachment)
+          content:
+            text/csv: { schema: { type: string } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/admin/payments/{id}:
+    get:
+      operationId: adminGetPayment
+      tags: [Admin · Payments]
+      summary: A payment with its ledger entry and commission transfer
+      x-permission: payments.read
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Payment, content: { application/json: { schema: { $ref: '#/components/schemas/AdminPaymentDetail' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/payments/{id}/reconcile:
+    post:
+      operationId: adminReconcilePayment
+      tags: [Admin · Payments]
+      summary: Ask Monime about an open payment
+      description: Closes it if its payment code expired or was cancelled. Completion only ever comes from Monime's webhook.
+      x-permission: payments.reconcile
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Before / after, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentReconcileResult' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ── Admin · fee setup ───────────────────────────────────────────────────────
+  /v1/admin/fee-types:
+    get:
+      operationId: adminFeeTypes
+      tags: [Admin · Fee setup]
+      summary: Fee types with their Monime account
+      x-permission: fees.read
+      security: [{ adminJwt: [] }]
+      responses:
+        '200': { description: Fee types, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/FeeTypeListItem' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: adminCreateFeeType
+      tags: [Admin · Fee setup]
+      summary: Create a fee type and its Monime financial account
+      description: |
+        The account (`unimak-fee-<code>`) is created in the same call. If Monime is unreachable
+        the fee type is still saved, `accountError` says why, and
+        `POST /v1/admin/fee-types/{id}/account` retries.
+      x-permission: fees.manage
+      security: [{ adminJwt: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name, payerKind, recurrence]
+              properties:
+                code: { type: string, pattern: '^[A-Z][A-Z0-9_]{1,19}$', example: LIB }
+                name: { type: string, minLength: 2, maxLength: 100 }
+                payerKind: { type: string, enum: [APPLICANT, STUDENT] }
+                recurrence: { type: string, enum: [ONCE, PER_YEAR] }
+      responses:
+        '201': { description: Created (accountError says why the Monime account is missing), content: { application/json: { schema: { allOf: [{ $ref: '#/components/schemas/FeeTypeWithAccount' }, { type: object, required: [accountError], properties: { accountError: { type: [string, 'null'] } } }] } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/fee-types/{id}:
+    patch:
+      operationId: adminRenameFeeType
+      tags: [Admin · Fee setup]
+      summary: Rename a fee type
+      x-permission: fees.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [name], properties: { name: { type: string, minLength: 2, maxLength: 100 } } }
+      responses:
+        '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/FeeType' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/fee-types/{id}/account:
+    post:
+      operationId: adminFeeTypeAccount
+      tags: [Admin · Fee setup]
+      summary: Create (or link) the fee type's Monime account — idempotent
+      x-permission: fees.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Account, content: { application/json: { schema: { $ref: '#/components/schemas/ProvisionedAccount' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Upstream' }
+
+  /v1/admin/fees:
+    get:
+      operationId: adminFees
+      tags: [Admin · Fee setup]
+      summary: List fees
+      x-permission: fees.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - { name: feeType, in: query, schema: { type: string, maxLength: 20 } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/FeeStatus' } }
+      responses:
+        '200': { description: Fees, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/FeeListItem' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: adminCreateFee
+      tags: [Admin · Fee setup]
+      summary: Create a fee (DRAFT)
+      x-permission: fees.manage
+      security: [{ adminJwt: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [feeTypeId, name, period, allowInstalments]
+              properties:
+                feeTypeId: { type: string, format: uuid }
+                name: { type: string, minLength: 2, maxLength: 100, example: Tuition 2026/27 }
+                period: { type: string, pattern: '^[A-Za-z0-9/-]{4,20}$', examples: ['2026/27', '2026-SEP'] }
+                allowInstalments: { type: boolean }
+                defaultMinInstalment: { $ref: '#/components/schemas/MinorAmount' }
+                dueDate: { type: string, format: date }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Fee' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/fees/{id}:
+    get:
+      operationId: adminFee
+      tags: [Admin · Fee setup]
+      summary: A fee with its rate, eligibility and instalment rules
+      x-permission: fees.read
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Fee, content: { application/json: { schema: { $ref: '#/components/schemas/FeeDetail' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: adminUpdateFee
+      tags: [Admin · Fee setup]
+      summary: Update a fee or change its status
+      description: |
+        Status: DRAFT → ACTIVE → CLOSED, and CLOSED → ACTIVE. Activating needs at least one
+        rate rule and a fee type with a Monime account. A closed fee creates no new obligations.
+      x-permission: fees.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 2, maxLength: 100 }
+                allowInstalments: { type: boolean }
+                defaultMinInstalment: { oneOf: [{ $ref: '#/components/schemas/MinorAmount' }, { type: 'null' }], description: 'null clears it' }
+                dueDate: { type: [string, 'null'], format: date }
+                status: { $ref: '#/components/schemas/FeeStatus' }
+      responses:
+        '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/Fee' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/fees/{id}/preview:
+    get:
+      operationId: adminPreview
+      tags: [Admin · Fee setup]
+      summary: What a given payer would owe (writes nothing)
+      x-permission: fees.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - { name: kind, in: query, required: true, schema: { type: string, enum: [applicant, student] } }
+        - { name: ref, in: query, required: true, schema: { type: string, pattern: '^[A-Za-z0-9_/-]{1,64}$' }, example: UNI-2025-0003 }
+      responses:
+        '200': { description: Preview, content: { application/json: { schema: { $ref: '#/components/schemas/FeePreview' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/fees/{id}/rate-rules:
+    post:
+      operationId: adminAddRateRule
+      tags: [Admin · Fee setup]
+      summary: Add a rate rule
+      description: The most specific matching rule wins. A rule that would make some payer's price ambiguous is refused (409 `AMBIGUOUS_RATE_RULE`, the message names the tie-breaker to add first).
+      x-permission: fees.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody: { $ref: '#/components/requestBodies/RateRule' }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/RateRule' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/fees/{id}/rate-rules/{ruleId}:
+    put:
+      operationId: adminUpdateRateRule
+      tags: [Admin · Fee setup]
+      summary: Replace a rate rule
+      x-permission: fees.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/RuleId' }]
+      requestBody: { $ref: '#/components/requestBodies/RateRule' }
+      responses:
+        '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/RateRule' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: adminDeleteRateRule
+      tags: [Admin · Fee setup]
+      summary: Delete a rate rule (refused if it breaks a tie)
+      x-permission: fees.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/RuleId' }]
+      responses:
+        '200': { description: Deleted, content: { application/json: { schema: { $ref: '#/components/schemas/Deleted' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/fees/{id}/eligibility-rules:
+    post:
+      operationId: adminAddEligibility
+      tags: [Admin · Fee setup]
+      summary: Add an eligibility rule
+      description: No eligibility rules = everyone of the fee type's payer kind. With rules, a payer must match at least one.
+      x-permission: fees.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Matchers'
+                - type: object
+                  properties: { finalYear: { type: [boolean, 'null'] } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/EligibilityRule' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/fees/{id}/eligibility-rules/{ruleId}:
+    delete:
+      operationId: adminDeleteEligibility
+      tags: [Admin · Fee setup]
+      summary: Delete an eligibility rule
+      x-permission: fees.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/RuleId' }]
+      responses:
+        '200': { description: Deleted, content: { application/json: { schema: { $ref: '#/components/schemas/Deleted' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/fees/{id}/instalment-rules/{programCode}:
+    put:
+      operationId: adminSetInstalment
+      tags: [Admin · Fee setup]
+      summary: Set the minimum instalment for a program
+      x-permission: instalments.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/ProgramCode' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [minInstalment], properties: { minInstalment: { $ref: '#/components/schemas/MinorAmount' } } }
+      responses:
+        '200': { description: Rule, content: { application/json: { schema: { $ref: '#/components/schemas/InstalmentRule' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: adminDeleteInstalment
+      tags: [Admin · Fee setup]
+      summary: Remove a program's minimum instalment (the fee default applies)
+      x-permission: instalments.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/ProgramCode' }]
+      responses:
+        '200': { description: Deleted, content: { application/json: { schema: { $ref: '#/components/schemas/Deleted' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ── Admin · treasury ────────────────────────────────────────────────────────
+  /v1/admin/financial-accounts:
+    get:
+      operationId: adminListAccounts
+      tags: [Admin · Treasury]
+      summary: Our Monime financial accounts (one per fee type + platform)
+      x-permission: accounts.read
+      security: [{ adminJwt: [] }]
+      responses:
+        '200': { description: Accounts, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AccountListItem' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/financial-accounts/provision:
+    post:
+      operationId: adminProvisionAccounts
+      tags: [Admin · Treasury]
+      summary: Create any missing accounts (all fee types + platform) — idempotent
+      x-permission: accounts.manage
+      security: [{ adminJwt: [] }]
+      responses:
+        '200': { description: Accounts (all fee types + platform), content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ProvisionedAccount' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Upstream' }
+
+  /v1/admin/financial-accounts/{id}/refresh-balance:
+    post:
+      operationId: adminRefreshBalance
+      tags: [Admin · Treasury]
+      summary: Fetch the account's balance from Monime
+      x-permission: accounts.read
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Account with fresh balance, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialAccount' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Upstream' }
+
+  /v1/admin/banks:
+    get:
+      operationId: adminBanks
+      tags: [Admin · Treasury]
+      summary: Banks Monime can pay out to
+      x-permission: payouts.read
+      security: [{ adminJwt: [] }]
+      responses:
+        '200': { description: Banks, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Bank' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/payouts:
+    get:
+      operationId: adminListPayouts
+      tags: [Admin · Treasury]
+      summary: List payouts
+      x-permission: payouts.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/PayoutStatus' } }
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200': { description: Page, content: { application/json: { schema: { $ref: '#/components/schemas/PayoutPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: adminCreatePayout
+      tags: [Admin · Treasury]
+      summary: Withdraw to a bank account (Monime payout)
+      description: Audited. Idempotent on `idempotencyKey`. The result arrives by `payout.completed|failed` webhook.
+      x-permission: payouts.manage
+      security: [{ adminJwt: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account, amount, bankProviderId, accountNumber, idempotencyKey]
+              properties:
+                account: { type: string, maxLength: 64, description: 'Account reference (unimak-fee-tuition) or Monime id (fac-…).' }
+                amount: { $ref: '#/components/schemas/MinorAmount' }
+                bankProviderId: { type: string, pattern: '^[a-z0-9]{2,20}$', example: slb001 }
+                accountNumber: { type: string, pattern: '^\d{4,34}$' }
+                accountName: { type: string, maxLength: 100 }
+                narration: { type: string, maxLength: 100 }
+                idempotencyKey: { type: string, minLength: 8, maxLength: 64 }
+      responses:
+        '201': { description: Submitted (or the existing payout for this idempotencyKey), content: { application/json: { schema: { $ref: '#/components/schemas/Payout' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Upstream' }
+
+  /v1/admin/payouts/{id}:
+    get:
+      operationId: adminGetPayout
+      tags: [Admin · Treasury]
+      summary: A payout
+      x-permission: payouts.read
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Payout, content: { application/json: { schema: { $ref: '#/components/schemas/PayoutDetail' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/transfers:
+    get:
+      operationId: adminListTransfers
+      tags: [Admin · Treasury]
+      summary: Commission transfers (fee account → platform account)
+      x-permission: transfers.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/TransferStatus' } }
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200': { description: Page, content: { application/json: { schema: { $ref: '#/components/schemas/TransferPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/transfers/{id}:
+    get:
+      tags: [Admin · Treasury]
+      operationId: adminGetTransfer
+      summary: A commission transfer
+      x-permission: transfers.read
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Transfer, content: { application/json: { schema: { $ref: '#/components/schemas/Transfer' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/transfers/{id}/retry:
+    post:
+      operationId: adminRetryTransfer
+      tags: [Admin · Treasury]
+      summary: Retry a FAILED transfer (new attempt, new idempotency key)
+      x-permission: transfers.retry
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Transfer after the new attempt, content: { application/json: { schema: { $ref: '#/components/schemas/Transfer' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/outbox:
+    get:
+      operationId: adminOutbox
+      tags: [Admin · Treasury]
+      summary: Outbox messages (portal notifications, commission transfers)
+      x-permission: outbox.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/OutboxStatus' } }
+      responses:
+        '200': { description: Page, content: { application/json: { schema: { $ref: '#/components/schemas/OutboxMessagePage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/outbox/{id}:
+    get:
+      tags: [Admin · Treasury]
+      operationId: adminGetOutbox
+      summary: An outbox message
+      x-permission: outbox.read
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Message, content: { application/json: { schema: { $ref: '#/components/schemas/OutboxMessage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/outbox/{id}/retry:
+    post:
+      operationId: adminRetryOutbox
+      tags: [Admin · Treasury]
+      summary: Retry a DEAD outbox message now
+      x-permission: outbox.retry
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Message after the retry, content: { application/json: { schema: { $ref: '#/components/schemas/OutboxMessage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # ── Admin · reconciliation ──────────────────────────────────────────────────
+  /v1/admin/reconciliation:
+    get:
+      operationId: adminReconciliation
+      tags: [Admin · Reconciliation]
+      summary: What needs attention
+      description: Open reconciliation items, unmatched/failed webhook events, failed or stuck transfers and payouts, dead outbox messages, stale open payments.
+      x-permission: reconciliation.read
+      security: [{ adminJwt: [] }]
+      responses:
+        '200': { description: Summary, content: { application/json: { schema: { $ref: '#/components/schemas/ReconciliationSummary' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/reconciliation/runs:
+    get:
+      operationId: adminRuns
+      tags: [Admin · Reconciliation]
+      summary: Reconciliation runs
+      x-permission: reconciliation.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/ReconciliationRunStatus' } }
+      responses:
+        '200': { description: Page, content: { application/json: { schema: { $ref: '#/components/schemas/ReconciliationRunPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: adminStartRun
+      tags: [Admin · Reconciliation]
+      summary: Reconcile a UTC day against Monime
+      description: Auto-settles payments whose webhook never arrived; flags unmatched or missing payments, fee mismatches and commission problems.
+      x-permission: reconciliation.manage
+      security: [{ adminJwt: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { date: { type: string, format: date, description: 'Default: yesterday (UTC).' } } }
+      responses:
+        '201': { description: The finished run with its items, content: { application/json: { schema: { $ref: '#/components/schemas/ReconciliationRunDetail' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Upstream' }
+
+  /v1/admin/reconciliation/runs/{id}:
+    get:
+      operationId: adminRun
+      tags: [Admin · Reconciliation]
+      summary: A run with its items
+      x-permission: reconciliation.read
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Run, content: { application/json: { schema: { $ref: '#/components/schemas/ReconciliationRunDetail' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/reconciliation/items:
+    get:
+      tags: [Admin · Reconciliation]
+      operationId: adminListItems
+      summary: Reconciliation items across runs
+      x-permission: reconciliation.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/ReconciliationItemStatus' } }
+        - { name: runId, in: query, schema: { type: string, format: uuid } }
+        - { name: kind, in: query, schema: { type: string, maxLength: 50 }, description: 'e.g. MISSING_PAYMENT, FEE_MISMATCH' }
+      responses:
+        '200': { description: Page, content: { application/json: { schema: { $ref: '#/components/schemas/ReconciliationItemPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/reconciliation/webhook-events:
+    get:
+      tags: [Admin · Reconciliation]
+      operationId: adminListWebhookEvents
+      summary: Received Monime webhook events (without payloads)
+      x-permission: reconciliation.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - { name: cursor, in: query, schema: { type: string, maxLength: 100 }, description: '`nextCursor` of the previous page (event ids are Monime ids, not UUIDs).' }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/WebhookEventStatus' } }
+        - { name: type, in: query, schema: { type: string, maxLength: 100 }, example: payment.processing_completed }
+        - { name: unresolved, in: query, schema: { type: boolean }, description: 'true: only events nobody has resolved yet.' }
+      responses:
+        '200': { description: Page, content: { application/json: { schema: { $ref: '#/components/schemas/WebhookEventPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/admin/reconciliation/items/{id}/resolve:
+    post:
+      operationId: adminResolveItem
+      tags: [Admin · Reconciliation]
+      summary: Resolve a reconciliation item (audited)
+      x-permission: reconciliation.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody: { $ref: '#/components/requestBodies/Resolution' }
+      responses:
+        '200': { description: Resolved item, content: { application/json: { schema: { $ref: '#/components/schemas/ReconciliationItem' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/reconciliation/webhook-events/{id}:
+    get:
+      operationId: adminWebhookEvent
+      tags: [Admin · Reconciliation]
+      summary: A stored webhook event (with payload)
+      x-permission: reconciliation.read
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/EventId' }]
+      responses:
+        '200': { description: Event with payload, content: { application/json: { schema: { $ref: '#/components/schemas/WebhookEvent' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/reconciliation/webhook-events/{id}/resolve:
+    post:
+      operationId: adminResolveEvent
+      tags: [Admin · Reconciliation]
+      summary: Mark an unmatched/failed event resolved (audited)
+      x-permission: reconciliation.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/EventId' }]
+      requestBody: { $ref: '#/components/requestBodies/Resolution' }
+      responses:
+        '200': { description: Resolved event, content: { application/json: { schema: { $ref: '#/components/schemas/WebhookEvent' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/reconciliation/webhook-events/{id}/replay:
+    post:
+      operationId: adminReplayEvent
+      tags: [Admin · Reconciliation]
+      summary: Process a stored event again (e.g. after fixing data)
+      x-permission: reconciliation.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/EventId' }]
+      responses:
+        '200': { description: Processing result, content: { application/json: { schema: { $ref: '#/components/schemas/WebhookAck' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ── Dev ─────────────────────────────────────────────────────────────────────
+  /dev/monime/simulate-webhook:
+    post:
+      operationId: devSimulate
+      tags: [Dev]
+      summary: Simulate Monime for a payment, transfer or payout (not in production)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome]
+              description: Exactly one of paymentId / transferId / payoutId.
+              properties:
+                paymentId: { type: string, format: uuid }
+                transferId: { type: string, format: uuid }
+                payoutId: { type: string, format: uuid }
+                outcome: { type: string, enum: [completed, failed, expired] }
+                amount: { $ref: '#/components/schemas/MinorAmount' }
+                payerPhone: { type: string, pattern: '^\+\d{8,15}$', description: 'Reported masked, like Monime.' }
+                metadata: { type: object, additionalProperties: { type: string } }
+                deliver: { type: boolean, description: 'false: recorded at Monime only (missed webhook).' }
+                eventId: { type: string, maxLength: 100 }
+      responses:
+        '200': { $ref: '#/components/responses/Any' }
+
+components:
+  securitySchemes:
+    channelHmac:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: |
+        Three headers on every request:
+        - `x-api-key`: the client's API key
+        - `x-timestamp`: unix seconds (within 300 s of server time)
+        - `x-signature`: hex `HMAC-SHA256(secret, "<x-timestamp>.<raw request body>")` (empty body for GET)
+
+        Example (Node): `createHmac('sha256', secret).update(ts + '.' + body).digest('hex')`.
+        `pnpm channel GET /v1/channel/...` signs for you.
+    adminJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Supabase Auth access token (email + password or OAuth). The user must be invited
+        (`AdminUser`); super admins and bursars need 2FA (`aal2`). Each operation lists its
+        permission in `x-permission`.
+    monimeSignature:
+      type: apiKey
+      in: header
+      name: Monime-Signature
+    cronSecret:
+      type: http
+      scheme: bearer
+      description: '`Authorization: Bearer $CRON_SECRET` (what Vercel Cron sends).'
+
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    RuleId: { name: ruleId, in: path, required: true, schema: { type: string, format: uuid } }
+    EventId: { name: id, in: path, required: true, schema: { type: string }, description: 'Monime event id.' }
+    ProgramCode: { name: programCode, in: path, required: true, schema: { type: string }, example: BSC-CS, description: 'Case-insensitive.' }
+    PayerKind: { name: kind, in: path, required: true, schema: { type: string, enum: [applicant, student] } }
+    PayerRef: { name: ref, in: path, required: true, schema: { type: string }, examples: { student: { value: UNI-2025-0002 }, applicant: { value: APP-2026-0001 } } }
+    UssdToken: { name: token, in: path, required: true, schema: { type: string }, description: 'Secret path token (USSD_EXCHANGE_PATH_TOKEN).' }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+    Cursor: { name: cursor, in: query, schema: { type: string, format: uuid }, description: '`nextCursor` of the previous page.' }
+    Sort: { name: sort, in: query, schema: { type: string, enum: [createdAt, -createdAt, amount, -amount], default: -createdAt }, description: '`-` = descending. Ties break on id, so cursor paging stays stable.' }
+
+  requestBodies:
+    RateRule:
+      required: true
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Matchers'
+              - type: object
+                required: [amount]
+                properties: { amount: { $ref: '#/components/schemas/MinorAmount' } }
+    Resolution:
+      required: true
+      content:
+        application/json:
+          schema: { type: object, required: [resolution], properties: { resolution: { type: string, minLength: 3, maxLength: 500 } } }
+
+  responses:
+    Any: { description: OK, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+    BadRequest: { description: Validation failed, content: { application/json: { schema: { $ref: '#/components/schemas/ValidationError' } } } }
+    Unauthorized: { description: Missing or invalid credentials, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Forbidden: { description: 'Missing permission, not an admin, or 2FA required', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    NotFound: { description: Not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Conflict: { description: Conflict, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Unprocessable: { description: Amount or rule not acceptable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Upstream: { description: Monime or the portal is unavailable — retry with the same idempotency key, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  schemas:
+    MinorAmount: { type: string, pattern: '^[1-9]\d{0,17}$', example: '150000', description: 'SLE minor units (1 SLE = 100). Integers are accepted in requests.' }
+    Money:
+      type: object
+      required: [value, display]
+      properties:
+        value: { type: string, example: '150000' }
+        display: { type: string, example: 'SLE 1,500.00' }
+    PaymentRef: { type: string, pattern: '^[1-9]\d{7}$', example: '15540719', description: '8-digit ref to give the payer for status checks.' }
+    Permission:
+      type: string
+      enum: [fees.read, fees.manage, instalments.manage, payers.read, payers.adjust, payments.read, payments.export, payments.refund, payments.reconcile, receipts.resend, accounts.read, accounts.manage, payouts.read, payouts.manage, transfers.read, transfers.retry, reconciliation.read, reconciliation.manage, outbox.read, outbox.retry, reports.read, audit.read, users.manage, settings.manage]
+
+    CountAmount:
+      type: object
+      properties:
+        count: { type: integer }
+        amount: { type: string, description: 'SLE minor units' }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: OBLIGATION_SETTLED }
+            message: { type: string }
+            details: { type: object, additionalProperties: true }
+    ValidationError:
+      type: object
+      properties:
+        statusCode: { type: integer, example: 400 }
+        message: { oneOf: [{ type: string }, { type: array, items: { type: string } }] }
+        error: { type: string, example: Bad Request }
+
+    Payer:
+      type: object
+      properties:
+        kind: { type: string, enum: [applicant, student] }
+        ref: { type: string, example: UNI-2025-0002 }
+        maskedName: { type: string, example: M*** J*** }
+        programLine: { type: string, example: BSC-CS · Level 2 }
+        stale: { type: boolean, description: 'true: the portal was unreachable; cached data was used.' }
+    Obligation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        feeTypeCode: { type: string, example: TUITION }
+        feeName: { type: string }
+        period: { type: string }
+        amount: { $ref: '#/components/schemas/Money' }
+        paid: { $ref: '#/components/schemas/Money' }
+        balance: { $ref: '#/components/schemas/Money' }
+        holds: { $ref: '#/components/schemas/Money', description: 'Open payments not yet expired.' }
+        payable: { $ref: '#/components/schemas/Money', description: 'balance − holds' }
+        minInstalment: { $ref: '#/components/schemas/Money' }
+        allowInstalments: { type: boolean }
+        dueDate: { type: [string, 'null'], format: date }
+        status: { type: string, enum: [OPEN, PAID] }
+    ChannelPayment:
+      type: object
+      properties:
+        paymentId: { type: string, format: uuid }
+        paymentRef: { $ref: '#/components/schemas/PaymentRef' }
+        monimeOrderNumber: { type: [string, 'null'], example: 3BMRXXXQXJW3 }
+        obligationId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/PaymentStatus', description: 'Open payments past expiry read EXPIRED.' }
+        amount: { $ref: '#/components/schemas/Money' }
+        channel: { $ref: '#/components/schemas/Channel' }
+        expiresAt: { type: string, format: date-time }
+        ussdCode: { type: [string, 'null'], description: 'Only while PENDING.' }
+        completedAt: { type: [string, 'null'], format: date-time }
+        failureReason: { type: [string, 'null'] }
+    PaymentStatusView:
+      type: object
+      properties:
+        paymentRef: { $ref: '#/components/schemas/PaymentRef' }
+        monimeOrderNumber: { type: [string, 'null'] }
+        status: { $ref: '#/components/schemas/PaymentStatus' }
+        amount: { $ref: '#/components/schemas/Money' }
+        feeName: { type: string }
+        payer:
+          type: object
+          properties:
+            kind: { type: string, enum: [applicant, student] }
+            ref: { type: string }
+            maskedName: { type: string }
+        receiptNumber: { type: [string, 'null'], example: UNIMAK-2026-000001 }
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
+    Receipt:
+      type: object
+      properties:
+        number: { type: string, example: UNIMAK-2026-000001 }
+        amount: { $ref: '#/components/schemas/Money' }
+        feeName: { type: string }
+        period: { type: string }
+        channel: { $ref: '#/components/schemas/Channel' }
+        issuedAt: { type: string, format: date-time }
+        paymentId: { type: string, format: uuid }
+
+    Matchers:
+      type: object
+      description: Omitted or null = matches any.
+      properties:
+        programCode: { type: [string, 'null'], maxLength: 20, example: BSC-CS }
+        department: { type: [string, 'null'], maxLength: 50, example: COMPUTING }
+        level: { type: [integer, 'null'], minimum: 1, maximum: 10 }
+        residency: { type: [string, 'null'], enum: [LOCAL, INTERNATIONAL, null] }
+        intake: { type: [string, 'null'], pattern: '^[A-Za-z0-9-]{4,20}$', example: 2026-SEP }
+
+    # ── Admin response shapes built on the generated rows ──
+    AdminPrincipal:
+      type: object
+      required: [id, email, role, permissions, departments, departmentScoped, aal]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/AdminRole' }
+        permissions: { type: array, items: { $ref: '#/components/schemas/Permission' } }
+        departments: { type: array, items: { type: string } }
+        departmentScoped: { type: boolean, description: 'true for HEAD_OF_DEPARTMENT: payments are limited to `departments`.' }
+        aal: { type: string, enum: [aal1, aal2], description: Supabase authenticator assurance level }
+    AdminPayment:
+      description: A payment row with its fee and payer.
+      allOf:
+        - $ref: '#/components/schemas/Payment'
+        - type: object
+          required: [feeTypeCode, feeName, payer, receiptNumber]
+          properties:
+            feeTypeCode: { type: string }
+            feeName: { type: string }
+            payer:
+              type: object
+              required: [kind, ref, fullName, programCode, department]
+              properties:
+                kind: { $ref: '#/components/schemas/PayerKind' }
+                ref: { type: string }
+                fullName: { type: string }
+                programCode: { type: string }
+                department: { type: [string, 'null'] }
+            receiptNumber: { type: [string, 'null'] }
+    AdminPaymentDetail:
+      allOf:
+        - $ref: '#/components/schemas/AdminPayment'
+        - type: object
+          required: [ledgerEntry, commissionTransfer]
+          properties:
+            ledgerEntry: { oneOf: [{ $ref: '#/components/schemas/LedgerEntry' }, { type: 'null' }], description: 'The PAYMENT ledger entry, once completed.' }
+            commissionTransfer: { oneOf: [{ $ref: '#/components/schemas/Transfer' }, { type: 'null' }] }
+    AccountListItem:
+      allOf:
+        - $ref: '#/components/schemas/FinancialAccount'
+        - type: object
+          required: [feeTypeCode, unsubmittedPayouts]
+          properties:
+            feeTypeCode: { type: [string, 'null'] }
+            unsubmittedPayouts: { type: string, description: 'SLE minor units in REQUESTED payouts not yet accepted by Monime.' }
+    ProvisionedAccount:
+      type: object
+      required: [reference, monimeId, name, purpose, feeTypeCode, created]
+      properties:
+        reference: { type: string, example: unimak-fee-tuition }
+        monimeId: { type: string }
+        name: { type: string }
+        purpose: { $ref: '#/components/schemas/FinancialAccountPurpose' }
+        feeTypeCode: { type: [string, 'null'] }
+        created: { type: boolean, description: 'false: it already existed (here, or at Monime and was linked).' }
+    Bank:
+      type: object
+      required: [providerId, name, active, canPayTo]
+      properties:
+        providerId: { type: string, example: slb001 }
+        name: { type: string }
+        active: { type: boolean }
+        canPayTo: { type: boolean, description: 'Payouts can be sent to this bank.' }
+    PayoutListItem:
+      allOf:
+        - $ref: '#/components/schemas/Payout'
+        - type: object
+          required: [financialAccount]
+          properties:
+            financialAccount:
+              type: object
+              required: [reference, monimeId]
+              properties: { reference: { type: string }, monimeId: { type: string } }
+    PayoutDetail:
+      allOf:
+        - $ref: '#/components/schemas/Payout'
+        - type: object
+          required: [financialAccount]
+          properties:
+            financialAccount: { $ref: '#/components/schemas/FinancialAccount' }
+    ReconciliationRunDetail:
+      allOf:
+        - $ref: '#/components/schemas/ReconciliationRun'
+        - type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/ReconciliationItem' } }
+    ReconciliationSummary:
+      type: object
+      required: [lastRun, counts, listLimit, openItems, webhookEvents, failedTransfers, stuckTransfers, stuckPayouts, failedPayouts, deadOutbox, staleOpenPayments]
+      properties:
+        lastRun: { oneOf: [{ $ref: '#/components/schemas/ReconciliationRun' }, { type: 'null' }] }
+        counts:
+          type: object
+          description: Exact counts (the lists below hold at most `listLimit` each).
+          required: [openItems, webhookEvents, failedTransfers, stuckTransfers, stuckPayouts, failedPayouts, deadOutbox, staleOpenPayments]
+          properties:
+            openItems: { type: integer, description: OPEN reconciliation items }
+            webhookEvents: { type: integer, description: UNMATCHED or FAILED webhook events nobody resolved }
+            failedTransfers: { type: integer }
+            stuckTransfers: { type: integer, description: PENDING/SUBMITTED for over an hour }
+            stuckPayouts: { type: integer, description: REQUESTED/SUBMITTED/PROCESSING for over an hour }
+            failedPayouts: { type: integer, description: FAILED in the last 7 days }
+            deadOutbox: { type: integer }
+            staleOpenPayments: { type: integer, description: 'Open past expiry (the expiry job clears these within 5 minutes).' }
+        listLimit: { type: integer, example: 100 }
+        openItems: { type: array, items: { $ref: '#/components/schemas/ReconciliationItem' } }
+        webhookEvents: { type: array, items: { $ref: '#/components/schemas/WebhookEventSummary' } }
+        failedTransfers: { type: array, items: { $ref: '#/components/schemas/Transfer' } }
+        stuckTransfers: { type: array, items: { $ref: '#/components/schemas/Transfer' } }
+        stuckPayouts: { type: array, items: { $ref: '#/components/schemas/Payout' } }
+        failedPayouts: { type: array, items: { $ref: '#/components/schemas/Payout' } }
+        deadOutbox: { type: array, items: { $ref: '#/components/schemas/OutboxMessage' } }
+        staleOpenPayments: { type: array, items: { $ref: '#/components/schemas/Payment' } }
+    WebhookAck:
+      type: object
+      required: [received, eventId, result]
+      properties:
+        received: { const: true }
+        eventId: { type: string }
+        result: { type: string, enum: [PROCESSED, IGNORED, UNMATCHED, DUPLICATE] }
+        note: { type: string, description: 'Why it was UNMATCHED / flagged (e.g. amount mismatch, late settlement).' }
+    FeeTypeListItem:
+      allOf:
+        - $ref: '#/components/schemas/FeeType'
+        - type: object
+          required: [account, _count]
+          properties:
+            account: { oneOf: [{ $ref: '#/components/schemas/FinancialAccount' }, { type: 'null' }] }
+            _count: { type: object, required: [fees], properties: { fees: { type: integer } } }
+    FeeTypeWithAccount:
+      allOf:
+        - $ref: '#/components/schemas/FeeType'
+        - type: object
+          required: [account]
+          properties:
+            account: { oneOf: [{ $ref: '#/components/schemas/FinancialAccount' }, { type: 'null' }] }
+    FeeListItem:
+      allOf:
+        - $ref: '#/components/schemas/Fee'
+        - type: object
+          required: [feeType, _count]
+          properties:
+            feeType: { $ref: '#/components/schemas/FeeType' }
+            _count: { type: object, required: [obligations, rateRules], properties: { obligations: { type: integer }, rateRules: { type: integer } } }
+    FeeDetail:
+      allOf:
+        - $ref: '#/components/schemas/Fee'
+        - type: object
+          required: [feeType, rateRules, eligibilityRules, instalmentRules, _count]
+          properties:
+            feeType: { $ref: '#/components/schemas/FeeTypeWithAccount' }
+            rateRules: { type: array, items: { $ref: '#/components/schemas/RateRule' } }
+            eligibilityRules: { type: array, items: { $ref: '#/components/schemas/EligibilityRule' } }
+            instalmentRules: { type: array, items: { $ref: '#/components/schemas/InstalmentRule' } }
+            _count: { type: object, required: [obligations], properties: { obligations: { type: integer } } }
+    FeePreview:
+      type: object
+      required: [payer, fee, eligible, reason, amount, rateRuleId, minInstalment]
+      properties:
+        payer:
+          type: object
+          required: [kind, ref, programCode, department, level, residency, intake, finalYear]
+          properties:
+            kind: { $ref: '#/components/schemas/PayerKind' }
+            ref: { type: string }
+            programCode: { type: string }
+            department: { type: [string, 'null'] }
+            level: { type: [integer, 'null'] }
+            residency: { $ref: '#/components/schemas/Residency' }
+            intake: { type: [string, 'null'] }
+            finalYear: { type: boolean }
+        fee:
+          type: object
+          required: [id, name, status, feeType]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            status: { $ref: '#/components/schemas/FeeStatus' }
+            feeType: { type: string, description: fee type code }
+        eligible: { type: boolean }
+        reason: { type: [string, 'null'], example: No eligibility rule matches }
+        amount: { type: [string, 'null'], description: SLE minor units }
+        rateRuleId: { type: [string, 'null'], format: uuid }
+        minInstalment: { type: [string, 'null'], description: SLE minor units }
+    Deleted:
+      type: object
+      required: [deleted]
+      properties: { deleted: { const: true } }
+    PaymentReconcileResult:
+      type: object
+      required: [paymentId, before, after]
+      properties:
+        paymentId: { type: string, format: uuid }
+        before: { $ref: '#/components/schemas/PaymentStatus' }
+        after: { $ref: '#/components/schemas/PaymentStatus' }
+    AuditLogPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AuditLog' } }
+        nextCursor: { type: [string, 'null'], description: 'Pass as `cursor` for the next page; null on the last page.' }
+    AdminPaymentPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AdminPayment' } }
+        nextCursor: { type: [string, 'null'], description: 'Pass as `cursor` for the next page; null on the last page.' }
+    PayoutPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/PayoutListItem' } }
+        nextCursor: { type: [string, 'null'], description: 'Pass as `cursor` for the next page; null on the last page.' }
+    TransferPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Transfer' } }
+        nextCursor: { type: [string, 'null'], description: 'Pass as `cursor` for the next page; null on the last page.' }
+    OutboxMessagePage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/OutboxMessage' } }
+        nextCursor: { type: [string, 'null'], description: 'Pass as `cursor` for the next page; null on the last page.' }
+    ReconciliationRunPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ReconciliationRun' } }
+        nextCursor: { type: [string, 'null'], description: 'Pass as `cursor` for the next page; null on the last page.' }
+    ReconciliationItemPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ReconciliationItem' } }
+        nextCursor: { type: [string, 'null'], description: 'Pass as `cursor` for the next page; null on the last page.' }
+    WebhookEventPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/WebhookEventSummary' } }
+        nextCursor: { type: [string, 'null'], description: 'Pass as `cursor` for the next page; null on the last page.' }
+    # ── BEGIN generated from prisma/schema.prisma by `pnpm openapi:models` — do not edit ──
+    AdminUser:
+      type: object
+      description: "Invite-only: a Supabase Auth user can use the admin API only if an active AdminUser with their email exists. Bound to the Supabase user id on first login."
+      required: [ id, email, authUserId, name, role, extraPermissions, departments, active, lastLoginAt, createdBy, createdAt, updatedAt ]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        authUserId: { description: "Supabase Auth user id (JWT sub), set on first login", type: [ string, "null" ], format: uuid }
+        name: { type: [ string, "null" ] }
+        role: { $ref: "#/components/schemas/AdminRole" }
+        extraPermissions: { type: array, items: { type: string }, description: granted on top of the role's bundle (e.g. instalments.manage) }
+        departments: { type: array, items: { type: string }, description: HEAD_OF_DEPARTMENT scope }
+        active: { type: boolean }
+        lastLoginAt: { type: [ string, "null" ], format: date-time }
+        createdBy: { type: [ string, "null" ] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AuditLog:
+      type: object
+      description: Every admin write, with before/after values.
+      required: [ id, actorId, action, entity, entityId, before, after, at ]
+      properties:
+        id: { type: string, format: uuid }
+        actorId: { description: 'AdminUser id, or "cli:<user>" / "system"', type: string }
+        action: { type: string }
+        entity: { type: string }
+        entityId: { type: string }
+        before: { description: JSON }
+        after: { description: JSON }
+        at: { type: string, format: date-time }
+    EligibilityRule:
+      type: object
+      required: [ id, feeId, programCode, department, level, residency, intake, finalYear ]
+      properties:
+        id: { type: string, format: uuid }
+        feeId: { type: string, format: uuid }
+        programCode: { type: [ string, "null" ] }
+        department: { type: [ string, "null" ] }
+        level: { type: [ integer, "null" ] }
+        residency: { oneOf: [ { $ref: "#/components/schemas/Residency" }, { type: "null" } ] }
+        intake: { type: [ string, "null" ] }
+        finalYear: { type: [ boolean, "null" ] }
+    Fee:
+      type: object
+      required: [ id, feeTypeId, name, period, allowInstalments, defaultMinInstalment, dueDate, status, createdAt ]
+      properties:
+        id: { type: string, format: uuid }
+        feeTypeId: { type: string, format: uuid }
+        name: { type: string }
+        period: { description: '"2026/27" for academic-year fees, "2026-SEP" for intake-based fees', type: string }
+        allowInstalments: { type: boolean }
+        defaultMinInstalment: { type: [ string, "null" ], pattern: ^-?\d+$, description: SLE minor units }
+        dueDate: { type: [ string, "null" ], format: date, description: Calendar day (YYYY-MM-DD). }
+        status: { $ref: "#/components/schemas/FeeStatus" }
+        createdAt: { type: string, format: date-time }
+    FeeType:
+      type: object
+      required: [ id, code, name, payerKind, recurrence, createdAt ]
+      properties:
+        id: { type: string, format: uuid }
+        code: { description: "APP, MATRIC, TUITION, DEPT, GRAD or a custom code", type: string }
+        name: { type: string }
+        payerKind: { $ref: "#/components/schemas/PayerKind" }
+        recurrence: { $ref: "#/components/schemas/Recurrence" }
+        createdAt: { type: string, format: date-time }
+    FinancialAccount:
+      type: object
+      description: Mirror of a Monime financial account we provisioned.
+      required: [ id, monimeId, reference, name, purpose, feeTypeId, uvan, availableBalance, balanceUpdatedAt, createdAt ]
+      properties:
+        id: { type: string, format: uuid }
+        monimeId: { description: Monime id (fac-…), type: string }
+        reference: { description: "our provisioning key, also Monime's (unique per Space) reference", type: string }
+        name: { type: string }
+        purpose: { $ref: "#/components/schemas/FinancialAccountPurpose" }
+        feeTypeId: { type: [ string, "null" ], format: uuid }
+        uvan: { type: [ string, "null" ] }
+        availableBalance: { description: SLE minor units. last known available balance (minor units) from Monime, type: [ string, "null" ], pattern: ^-?\d+$ }
+        balanceUpdatedAt: { type: [ string, "null" ], format: date-time }
+        createdAt: { type: string, format: date-time }
+    InstalmentRule:
+      type: object
+      required: [ id, feeId, programCode, minInstalment, updatedBy, updatedAt ]
+      properties:
+        id: { type: string, format: uuid }
+        feeId: { type: string, format: uuid }
+        programCode: { type: string }
+        minInstalment: { type: string, pattern: ^-?\d+$, description: SLE minor units }
+        updatedBy: { type: string }
+        updatedAt: { type: string, format: date-time }
+    LedgerEntry:
+      type: object
+      description: "Append-only (UPDATE/DELETE blocked by trigger). Signed amount: CHARGE > 0 (owed), PAYMENT < 0, REFUND > 0, ADJUSTMENT either way. balance = SUM(amount)."
+      required: [ id, obligationId, type, amount, paymentId, memo, createdBy, createdAt ]
+      properties:
+        id: { type: string, format: uuid }
+        obligationId: { type: string, format: uuid }
+        type: { $ref: "#/components/schemas/LedgerEntryType" }
+        amount: { type: string, pattern: ^-?\d+$, description: SLE minor units }
+        paymentId: { type: [ string, "null" ], format: uuid }
+        memo: { type: [ string, "null" ] }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+    OutboxMessage:
+      type: object
+      required: [ id, type, dedupeKey, payload, status, attempts, nextAttemptAt, lockedUntil, lastError, createdAt, sentAt ]
+      properties:
+        id: { type: string, format: uuid }
+        type: { description: sms.receipt | portal.application_paid | monime.commission_transfer, type: string }
+        dedupeKey: { description: 'idempotency: e.g. "monime.commission_transfer:<paymentId>"', type: string }
+        payload: { description: JSON }
+        status: { $ref: "#/components/schemas/OutboxStatus" }
+        attempts: { type: integer }
+        nextAttemptAt: { type: string, format: date-time }
+        lockedUntil: { type: [ string, "null" ], format: date-time }
+        lastError: { type: [ string, "null" ] }
+        createdAt: { type: string, format: date-time }
+        sentAt: { type: [ string, "null" ], format: date-time }
+    Payment:
+      type: object
+      required: [ id, obligationId, amount, channel, clientId, idempotencyKey, paymentRef, payerPhone, phoneAuthorized, collectionMethod, status, monimeRef, ussdCode, monimePaymentId, monimeOrderNumber, pricingConfigId, monimeFee, platformFee, netAmount, expiresAt, completedAt, failureReason, createdAt, updatedAt ]
+      properties:
+        id: { type: string, format: uuid }
+        obligationId: { type: string, format: uuid }
+        amount: { type: string, pattern: ^-?\d+$, description: SLE minor units }
+        channel: { $ref: "#/components/schemas/Channel" }
+        clientId: { description: channel API client that created it (idempotency scope), type: string }
+        idempotencyKey: { type: string }
+        paymentRef: { description: short ref shown to the payer (8 digits) for status checks, type: string }
+        payerPhone: { description: "number that actually paid: full when known (verified or from metadata), else Monime's masked one (+23276****56); null until known", type: [ string, "null" ] }
+        phoneAuthorized: { description: payment code restricted to payerPhone, type: boolean }
+        collectionMethod: { $ref: "#/components/schemas/CollectionMethod" }
+        status: { $ref: "#/components/schemas/PaymentStatus" }
+        monimeRef: { description: Monime payment code id (pmc-…) created at initiation, type: [ string, "null" ] }
+        ussdCode: { description: "USSD string the payer dials, e.g. *715*1*7344331308#", type: [ string, "null" ] }
+        monimePaymentId: { description: Monime Payment id (spm-…) from payment.processing_completed, type: [ string, "null" ] }
+        monimeOrderNumber: { description: Monime order number from the completed payment (sent to the payer by Monime SMS), type: [ string, "null" ] }
+        pricingConfigId: { type: string, format: uuid }
+        monimeFee: { type: string, pattern: ^-?\d+$, description: SLE minor units }
+        platformFee: { type: string, pattern: ^-?\d+$, description: SLE minor units }
+        netAmount: { type: string, pattern: ^-?\d+$, description: SLE minor units }
+        expiresAt: { type: string, format: date-time }
+        completedAt: { type: [ string, "null" ], format: date-time }
+        failureReason: { type: [ string, "null" ] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Payout:
+      type: object
+      description: Withdrawal from one of our Monime accounts to a bank (or momo) account.
+      required: [ id, financialAccountId, amount, destinationType, providerId, accountNumber, accountName, narration, status, monimePayoutId, fees, failureCode, failureMessage, requestedBy, idempotencyKey, createdAt, updatedAt, completedAt ]
+      properties:
+        id: { type: string, format: uuid }
+        financialAccountId: { type: string, format: uuid }
+        amount: { type: string, pattern: ^-?\d+$, description: SLE minor units }
+        destinationType: { type: string }
+        providerId: { type: string }
+        accountNumber: { description: bank account number (or MSISDN for momo), type: string }
+        accountName: { type: [ string, "null" ] }
+        narration: { type: [ string, "null" ] }
+        status: { $ref: "#/components/schemas/PayoutStatus" }
+        monimePayoutId: { type: [ string, "null" ] }
+        fees: { description: SLE minor units. Monime fees reported on the payout, type: [ string, "null" ], pattern: ^-?\d+$ }
+        failureCode: { type: [ string, "null" ] }
+        failureMessage: { type: [ string, "null" ] }
+        requestedBy: { type: string }
+        idempotencyKey: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        completedAt: { type: [ string, "null" ], format: date-time }
+    RateRule:
+      type: object
+      required: [ id, feeId, programCode, department, level, residency, intake, amount, createdAt ]
+      properties:
+        id: { type: string, format: uuid }
+        feeId: { type: string, format: uuid }
+        programCode: { type: [ string, "null" ] }
+        department: { type: [ string, "null" ] }
+        level: { type: [ integer, "null" ] }
+        residency: { oneOf: [ { $ref: "#/components/schemas/Residency" }, { type: "null" } ] }
+        intake: { type: [ string, "null" ] }
+        amount: { type: string, pattern: ^-?\d+$, description: SLE minor units }
+        createdAt: { type: string, format: date-time }
+    ReconciliationItem:
+      type: object
+      required: [ id, runId, kind, status, paymentId, monimePaymentId, transferId, financialAccountId, expected, actual, note, resolvedAt, resolvedBy, resolution, createdAt ]
+      properties:
+        id: { type: string, format: uuid }
+        runId: { type: string, format: uuid }
+        kind: { description: MISSED_WEBHOOK_SETTLED | UNMATCHED_MONIME_PAYMENT | MISSING_AT_MONIME | AMOUNT_MISMATCH | MONIME_FEE_MISMATCH | COMMISSION_MISSING | COMMISSION_NOT_COMPLETED | COMMISSION_AMOUNT_MISMATCH | SCAN_TRUNCATED, type: string }
+        status: { $ref: "#/components/schemas/ReconciliationItemStatus" }
+        paymentId: { type: [ string, "null" ], format: uuid }
+        monimePaymentId: { type: [ string, "null" ] }
+        transferId: { type: [ string, "null" ], format: uuid }
+        financialAccountId: { type: [ string, "null" ] }
+        expected: { description: JSON }
+        actual: { description: JSON }
+        note: { type: string }
+        resolvedAt: { type: [ string, "null" ], format: date-time }
+        resolvedBy: { type: [ string, "null" ] }
+        resolution: { type: [ string, "null" ] }
+        createdAt: { type: string, format: date-time }
+    ReconciliationRun:
+      type: object
+      description: One nightly (or manual) comparison of a time window against Monime.
+      required: [ id, windowStart, windowEnd, status, triggeredBy, startedAt, finishedAt, stats, error ]
+      properties:
+        id: { type: string, format: uuid }
+        windowStart: { type: string, format: date-time }
+        windowEnd: { type: string, format: date-time }
+        status: { $ref: "#/components/schemas/ReconciliationRunStatus" }
+        triggeredBy: { description: '"cron" or an AdminUser id', type: string }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: [ string, "null" ], format: date-time }
+        stats: { description: JSON }
+        error: { type: [ string, "null" ] }
+    Transfer:
+      type: object
+      description: Internal transfer between our Monime accounts (platform commission per payment).
+      required: [ id, kind, paymentId, sourceAccount, destinationAccount, amount, status, attempt, monimeTransferId, failureCode, failureMessage, createdAt, updatedAt, completedAt ]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string }
+        paymentId: { type: [ string, "null" ], format: uuid }
+        sourceAccount: { type: string }
+        destinationAccount: { type: string }
+        amount: { type: string, pattern: ^-?\d+$, description: SLE minor units }
+        status: { $ref: "#/components/schemas/TransferStatus" }
+        attempt: { description: 1 for the first send; an admin retry after FAILED increments it (new Idempotency-Key), type: integer }
+        monimeTransferId: { type: [ string, "null" ] }
+        failureCode: { type: [ string, "null" ] }
+        failureMessage: { type: [ string, "null" ] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        completedAt: { type: [ string, "null" ], format: date-time }
+    WebhookEvent:
+      type: object
+      description: Inbox for Monime webhook deliveries. The Monime event id is the dedupe key; PROCESSED / IGNORED / UNMATCHED are final, FAILED is retried by Monime.
+      required: [ id, type, payload, status, attempts, error, receivedAt, processedAt, resolvedAt, resolvedBy, resolution ]
+      properties:
+        id: &a1 { type: string }
+        type: &a2 { type: string }
+        payload: { description: JSON }
+        status: &a3 { $ref: "#/components/schemas/WebhookEventStatus" }
+        attempts: &a4 { type: integer }
+        error: &a5 { description: failure message or outcome note (e.g. why UNMATCHED), type: [ string, "null" ] }
+        receivedAt: &a6 { type: string, format: date-time }
+        processedAt: &a7 { type: [ string, "null" ], format: date-time }
+        resolvedAt: &a8 { description: set when an admin resolves an UNMATCHED / FAILED event (reconciliation), type: [ string, "null" ], format: date-time }
+        resolvedBy: &a9 { type: [ string, "null" ], format: uuid }
+        resolution: &a10 { type: [ string, "null" ] }
+    WebhookEventSummary:
+      type: object
+      description: A webhook event without its payload (GET /v1/admin/reconciliation/webhook-events/{id} has it).
+      required: [ id, type, status, attempts, error, receivedAt, processedAt, resolvedAt, resolvedBy, resolution ]
+      properties:
+        id: *a1
+        type: *a2
+        status: *a3
+        attempts: *a4
+        error: *a5
+        receivedAt: *a6
+        processedAt: *a7
+        resolvedAt: *a8
+        resolvedBy: *a9
+        resolution: *a10
+    AdminRole:
+      type: string
+      enum: [ SUPER_ADMIN, BURSAR, FINANCE_OFFICER, HEAD_OF_DEPARTMENT, AUDITOR ]
+    Channel:
+      type: string
+      enum: [ USSD, DOTS ]
+    CollectionMethod:
+      type: string
+      enum: [ PAYMENT_CODE, USSD_FLOW ]
+    FeeStatus:
+      type: string
+      enum: [ DRAFT, ACTIVE, CLOSED ]
+    FinancialAccountPurpose:
+      type: string
+      enum: [ FEE_TYPE, PLATFORM ]
+    LedgerEntryType:
+      type: string
+      enum: [ CHARGE, PAYMENT, ADJUSTMENT, REFUND ]
+    OutboxStatus:
+      type: string
+      enum: [ PENDING, SENT, DEAD ]
+    PayerKind:
+      type: string
+      enum: [ APPLICANT, STUDENT ]
+    PaymentStatus:
+      type: string
+      enum: [ INITIATED, PENDING, COMPLETED, FAILED, EXPIRED ]
+    PayoutStatus:
+      type: string
+      enum: [ REQUESTED, SUBMITTED, PROCESSING, COMPLETED, FAILED ]
+    ReconciliationItemStatus:
+      type: string
+      enum: [ OPEN, AUTO_RESOLVED, RESOLVED ]
+    ReconciliationRunStatus:
+      type: string
+      enum: [ RUNNING, COMPLETED, FAILED ]
+    Recurrence:
+      type: string
+      enum: [ ONCE, PER_YEAR ]
+    Residency:
+      type: string
+      enum: [ LOCAL, INTERNATIONAL ]
+    TransferStatus:
+      type: string
+      enum: [ PENDING, SUBMITTED, COMPLETED, FAILED ]
+    WebhookEventStatus:
+      type: string
+      enum: [ RECEIVED, PROCESSED, IGNORED, UNMATCHED, FAILED ]
+    # ── END generated ──

@@ -24,3 +24,5 @@ blob-report/
 
 # vercel
 .vercel
+*.pem
+.pnpm-debug.log*
