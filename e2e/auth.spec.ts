@@ -55,3 +55,17 @@ test("sign out from the user menu", async ({ page }) => {
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/sign-in/);
 });
+
+test("an activity timestamp left over from an earlier session doesn't bounce a fresh sign-in", async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!sessionStorage.getItem("seeded")) {
+      sessionStorage.setItem("seeded", "1");
+      localStorage.setItem("unimak:last-activity", String(Date.now() - 3 * 60 * 60 * 1000));
+    }
+  });
+  await signIn(page, PERSONA.super, { totp: true });
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+  await expectSignedIn(page, PERSONA.super);
+  await page.waitForTimeout(500);
+  await expect(page).not.toHaveURL(/\/sign-in/);
+});

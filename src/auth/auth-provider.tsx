@@ -7,6 +7,7 @@ import { errorMessage, isApiError, isNotAnAdmin } from "@/api/errors";
 import type { Permission } from "@/api/permissions.gen";
 import type { components } from "@/api/schema.gen";
 import { getSupabase } from "@/lib/supabase";
+import { clearActivity, markActivity } from "./idle";
 
 export type Me = components["schemas"]["AdminPrincipal"];
 
@@ -79,6 +80,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setMe(null);
       setStatus(reason === "not_admin" ? "not_admin" : "signed_out");
       queryClient.clear();
+      clearActivity();
       await getSupabase().auth.signOut({ scope: "local" }).catch(() => undefined);
     },
     [queryClient],
@@ -156,6 +158,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { error } = await getSupabase().auth.signInWithPassword({ email, password });
       if (error) throw new Error(error.message === "Invalid login credentials" ? "Wrong email or password" : error.message);
       setSignOutReason(null);
+      markActivity();
       await resolve();
     },
     [resolve],
@@ -170,6 +173,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       const { error } = await getSupabase().auth.mfa.challengeAndVerify({ factorId, code });
       if (error) throw new Error(error.message.includes("Invalid") ? "That code is not right. Try the current one." : error.message);
+      markActivity();
       await resolve();
     },
     [resolve],
@@ -191,6 +195,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async (factorId: string, code: string) => {
       const { error } = await getSupabase().auth.mfa.challengeAndVerify({ factorId, code });
       if (error) throw new Error(error.message.includes("Invalid") ? "That code is not right. Try the current one." : error.message);
+      markActivity();
       await resolve();
     },
     [resolve],

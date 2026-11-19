@@ -29,6 +29,24 @@ function write(t: number) {
   }
 }
 
+/**
+ * Call when someone has just authenticated (password, TOTP, email link). A timestamp left
+ * over from an earlier session must not count: otherwise a fresh sign-in is "idle" at once
+ * and lands straight back on the sign-in page.
+ */
+export function markActivity(now = Date.now()) {
+  write(now);
+}
+
+/** Call on sign-out so the next session starts clean. */
+export function clearActivity() {
+  try {
+    localStorage.removeItem(KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Signs out after 30 minutes without activity in any tab (also after a sleeping laptop wakes). */
 export function useIdleSignOut(enabled: boolean, onIdle: () => void) {
   useEffect(() => {
