@@ -28,12 +28,14 @@ test("auditor sees the payments export disabled with the missing permission", as
   await expect(page.getByRole("tooltip")).toContainText("Requires the payments.export permission");
 });
 
-test("head of department: departments in the header, only their payments", async ({ page }) => {
+test("head of department: departments in the header by name, only their payments", async ({ page }) => {
   await signIn(page, PERSONA.hod);
-  await expect(page.getByTitle("You see payments for these departments only")).toContainText("COMPUTING");
+  await expect(page.getByTestId("scope")).toHaveText("Computer Science");
   await page.goto("/payments");
-  await expect(page.getByText("Only COMPUTING.")).toBeVisible();
-  const programs = page.locator("tbody tr td:nth-child(3) div div:last-child");
+  await expect(page.getByText("Only Computer Science.")).toBeVisible();
+  // no faculty filter for a head of department; the department filter offers only theirs
+  await expect(page.getByRole("combobox", { name: "Faculty" })).toHaveCount(0);
+  const programs = page.locator("tbody tr td:nth-child(3) div div:nth-child(2)");
   await expect(programs.first()).toBeVisible();
-  for (const text of await programs.allTextContents()) expect(text).toMatch(/BSC-(CS|IT)/);
+  for (const text of await programs.allTextContents()) expect(text).toMatch(/BSC-CS/);
 });

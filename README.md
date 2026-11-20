@@ -100,10 +100,16 @@ gating is realistic. State resets on reload.
 | `bursar@unimak.test` | BURSAR | not enrolled: goes through enrolment |
 | `finance@unimak.test` | FINANCE_OFFICER | — |
 | `hod@unimak.test` | HEAD_OF_DEPARTMENT (COMPUTING) | — |
-| `auditor@unimak.test` | AUDITOR | — |
+| `dean@unimak.test` | DEAN (FAC-SCI-TECH: COMPUTING, INFO-TECH, MATHS) | — |
+| `auditor@unimak.test` | AUDITOR (every read except `transfers.read`) | — |
 | any other email | not an admin → "no access" | — |
 
-Any password works except `wrong`. The TOTP code is `123456`.
+Any password works except `wrong`. The TOTP code is `123456`. Only the super admin has `transfers.read`, as
+on the backend, so the others show what an admin without commission transfers sees.
+
+**Faculties & departments:** five faculties (Agriculture inactive) and seven departments (Mathematics
+inactive). `MASS-COMM` is one the portal "sent" that needs review, so the nav badge shows 1.
+`COMPUTING` is used by the head of department and an eligibility rule, so deactivating it gives a 409.
 
 **Email links:** use `token_hash=invite:<email>` or `recovery:<email>`, e.g.
 `/auth/accept-invite?token_hash=invite:pending@unimak.test&type=invite`. `token_hash=expired` is
@@ -155,6 +161,14 @@ Never hand-write API types. If the UI needs something the spec doesn't have, it'
   (what people type), `sleInWords`.
 - **Time** `src/lib/time.ts`: Africa/Freetown (UTC), ISO on hover; calendar days stay strings.
 - **Pages** live under `src/app/(app)/…`; each list keeps its filters in the URL.
+- **Faculties → departments** `src/components/academics.tsx`: the one place that loads
+  `GET /v1/admin/faculties`. Every department field is a dropdown of active, reviewed departments
+  grouped by faculty (`DepartmentSelect`, `DepartmentMultiSelect`), and codes are shown by name
+  (`DepartmentName`, `useScopeNames`). The Needs review nav badge comes from
+  `GET /v1/admin/departments?needsReview=true`.
+- **Commission transfers** need `transfers.read` (super admins unless granted). Without it the
+  nav item, the payment's commission transfer, the reconciliation transfer sections and tiles, and
+  the report's commission card are hidden. The API sends `null` for them.
 - **Public routes:** `/sign-in`, `/sign-in/2fa`, `/no-access`, `/auth/accept-invite`,
   `/auth/forgot-password`, `/auth/reset-password`. They live in the `(auth)` route group; there is
   no middleware. Everything under `(app)` is gated client-side by the session (`AppShell`).

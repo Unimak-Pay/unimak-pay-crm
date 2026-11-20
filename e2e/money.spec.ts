@@ -73,7 +73,12 @@ test("fees: an ambiguous rate rule is refused inline with the server's message",
   await page.goto("/fees?feeType=TUITION&status=ACTIVE");
   await page.getByText("Tuition 2026/27").click();
   await page.getByRole("button", { name: "Add rate rule" }).click();
-  await page.getByLabel("Department").fill("COMPUTING");
+  // departments are a dropdown of active, reviewed departments grouped by faculty
+  await page.getByRole("combobox", { name: "Department" }).click();
+  await expect(page.getByRole("group", { name: "Faculty of Science & Technology" })).toBeVisible();
+  await expect(page.getByRole("option", { name: /Mathematics/ })).toHaveCount(0); // inactive
+  await expect(page.getByRole("option", { name: /MASS-COMM/ })).toHaveCount(0); // needs review
+  await page.getByRole("option", { name: "Computer Science" }).click();
   await page.getByLabel("Amount").fill("4,000");
   await page.getByRole("button", { name: "Add rule" }).click();
   await expect(page.getByText("This rule would make some payers' price ambiguous")).toBeVisible();

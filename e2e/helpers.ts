@@ -6,6 +6,7 @@ export const PERSONA = {
   bursar: "bursar@unimak.test",
   finance: "finance@unimak.test",
   hod: "hod@unimak.test",
+  dean: "dean@unimak.test",
   auditor: "auditor@unimak.test",
   stranger: "someone@example.test",
 } as const;
