@@ -1263,11 +1263,15 @@ paths:
     put:
       operationId: adminSetInstalment
       tags: [Admin · Fee setup]
-      summary: Set the minimum instalment for a department
-      description: The department must exist, be active and reviewed (400 otherwise). Its payers (students and applicants) can't pay less per instalment.
+      summary: Set the minimum instalment for a department, optionally for one level
+      description: |
+        The department must exist, be active and reviewed (400 otherwise). Its payers can't pay less per
+        instalment. With `?level=`, the rule is for students of that level only; without it, for every
+        level (and for applicants, who have no level). A student's own level rule wins over the
+        all-levels rule. Setting the same department and level again updates the rule.
       x-permission: instalments.manage
       security: [{ adminJwt: [] }]
-      parameters: [{ $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/DepartmentCode' }]
+      parameters: [{ $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/DepartmentCode' }, { $ref: '#/components/parameters/InstalmentLevel' }]
       requestBody:
         required: true
         content:
@@ -1281,10 +1285,11 @@ paths:
     delete:
       operationId: adminDeleteInstalment
       tags: [Admin · Fee setup]
-      summary: Remove a department's minimum instalment (the fee default applies)
+      summary: Remove a department's (or one level's) minimum instalment
+      description: Without `?level=` removes the all-levels rule. Removing a level rule makes that level fall back to the all-levels rule, then the fee default.
       x-permission: instalments.manage
       security: [{ adminJwt: [] }]
-      parameters: [{ $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/DepartmentCode' }]
+      parameters: [{ $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/DepartmentCode' }, { $ref: '#/components/parameters/InstalmentLevel' }]
       responses:
         '200': { description: Deleted, content: { application/json: { schema: { $ref: '#/components/schemas/Deleted' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1723,6 +1728,7 @@ components:
     FacultyFilter: { name: faculty, in: query, schema: { type: string, maxLength: 40 }, example: FAC-NURSING-AHS, description: 'Faculty code: its departments as they are now.' }
     PayerKind: { name: kind, in: path, required: true, schema: { type: string, enum: [applicant, student] } }
     PayerRef: { name: ref, in: path, required: true, schema: { type: string }, examples: { student: { value: UNI-2025-0002 }, applicant: { value: APP-2026-0001 } } }
+    InstalmentLevel: { name: level, in: query, required: false, description: 'Student level 1-10. Omitted = every level of the department.', schema: { type: integer, minimum: 1, maximum: 10 } }
     UssdToken: { name: token, in: path, required: true, schema: { type: string }, description: 'Secret path token (USSD_EXCHANGE_PATH_TOKEN).' }
     Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
     Cursor: { name: cursor, in: query, schema: { type: string, format: uuid }, description: '`nextCursor` of the previous page.' }
@@ -2362,11 +2368,12 @@ components:
     InstalmentRule:
       type: object
       description: Minimum instalment for one department's payers (overrides Fee.defaultMinInstalment).
-      required: [ id, feeId, department, minInstalment, updatedBy, updatedAt ]
+      required: [ id, feeId, department, level, minInstalment, updatedBy, updatedAt ]
       properties:
         id: { type: string, format: uuid }
         feeId: { type: string, format: uuid }
         department: { description: Department.code, type: string }
+        level: { description: "student level (1-10) this minimum is for; null = every level of the department. One rule per (fee, department, level), null included: enforced under the fee row lock.", type: [ integer, "null" ] }
         minInstalment: { type: string, pattern: ^-?\d+$, description: SLE minor units }
         updatedBy: { type: string }
         updatedAt: { type: string, format: date-time }

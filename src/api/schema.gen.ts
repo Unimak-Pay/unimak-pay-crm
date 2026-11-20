@@ -883,12 +883,18 @@ export interface paths {
         };
         get?: never;
         /**
-         * Set the minimum instalment for a department
-         * @description The department must exist, be active and reviewed (400 otherwise). Its payers (students and applicants) can't pay less per instalment.
+         * Set the minimum instalment for a department, optionally for one level
+         * @description The department must exist, be active and reviewed (400 otherwise). Its payers can't pay less per
+         *     instalment. With `?level=`, the rule is for students of that level only; without it, for every
+         *     level (and for applicants, who have no level). A student's own level rule wins over the
+         *     all-levels rule. Setting the same department and level again updates the rule.
          */
         put: operations["adminSetInstalment"];
         post?: never;
-        /** Remove a department's minimum instalment (the fee default applies) */
+        /**
+         * Remove a department's (or one level's) minimum instalment
+         * @description Without `?level=` removes the all-levels rule. Removing a level rule makes that level fall back to the all-levels rule, then the fee default.
+         */
         delete: operations["adminDeleteInstalment"];
         options?: never;
         head?: never;
@@ -1929,6 +1935,8 @@ export interface components {
             feeId: string;
             /** @description Department.code */
             department: string;
+            /** @description student level (1-10) this minimum is for; null = every level of the department. One rule per (fee, department, level), null included: enforced under the fee row lock. */
+            level: number | null;
             /** @description SLE minor units */
             minInstalment: string;
             updatedBy: string;
@@ -2319,6 +2327,8 @@ export interface components {
         FacultyFilter: string;
         PayerKind: "applicant" | "student";
         PayerRef: string;
+        /** @description Student level 1-10. Omitted = every level of the department. */
+        InstalmentLevel: number;
         /** @description Secret path token (USSD_EXCHANGE_PATH_TOKEN). */
         UssdToken: string;
         Limit: number;
@@ -4107,7 +4117,10 @@ export interface operations {
     };
     adminSetInstalment: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Student level 1-10. Omitted = every level of the department. */
+                level?: components["parameters"]["InstalmentLevel"];
+            };
             header?: never;
             path: {
                 id: components["parameters"]["Id"];
@@ -4143,7 +4156,10 @@ export interface operations {
     };
     adminDeleteInstalment: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Student level 1-10. Omitted = every level of the department. */
+                level?: components["parameters"]["InstalmentLevel"];
+            };
             header?: never;
             path: {
                 id: components["parameters"]["Id"];

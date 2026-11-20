@@ -183,7 +183,7 @@ export function createDb() {
         // tie-breaker: without it an international nursing student would match two equally specific rules
         { id: uuid(6), feeId: fee.id, programCode: "BSC-NURS", department: null, level: null, residency: "INTERNATIONAL", intake: null, amount: "1000000", createdAt: fee.createdAt },
       );
-      instalmentRules.push({ id: uuid(7), feeId: fee.id, department: "NURSING", minInstalment: "150000", updatedBy: users[1].id, updatedAt: iso(NOW - 20 * DAY) });
+      instalmentRules.push({ id: uuid(7), feeId: fee.id, department: "NURSING", level: null, minInstalment: "150000", updatedBy: users[1].id, updatedAt: iso(NOW - 20 * DAY) });
     }
     if (ft.code === "DEPT") {
       eligibilityRules.push({ id: uuid(7), feeId: fee.id, programCode: null, department: "COMPUTING", level: null, residency: null, intake: null, finalYear: null });
@@ -390,6 +390,9 @@ export function createDb() {
   ];
 
   const obligations = seedObligations(fees, feeTypes, rateRules);
+  // a level rule (added last so earlier fixture ids don't shift): final-year nursing students pay at least 1,200 per instalment
+  const tuition = fees.find((f) => f.name === "Tuition 2026/27")!;
+  instalmentRules.push({ id: uuid(7), feeId: tuition.id, department: "NURSING", level: 4, minInstalment: "120000", updatedBy: users[1].id, updatedAt: iso(NOW - 10 * DAY) });
 
   return { faculties, departments, users, feeTypes, accounts, fees, rateRules, eligibilityRules, instalmentRules, payments, transfers, ledger, payouts, outbox, runs, items, webhookEvents, audit, banks, obligations };
 }

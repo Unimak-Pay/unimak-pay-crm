@@ -365,6 +365,17 @@ function planReprice(fee: S["Fee"]): RepriceReport {
   return report;
 }
 
+/** `?level=` on instalment-rule routes (class-validator's messages): null = every level. */
+function instalmentLevel(url: URL): number | null | Response {
+  const raw = url.searchParams.get("level");
+  if (raw === null || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n)) return invalid("level must be an integer number");
+  if (n < 1) return invalid("level must not be less than 1");
+  if (n > 10) return invalid("level must not be greater than 10");
+  return n;
+}
+
 function feeDetail(fee: S["Fee"]): S["FeeDetail"] {
   const ft = db.feeTypes.find((t) => t.id === fee.feeTypeId)!;
   return {
@@ -773,7 +784,9 @@ export const apiHandlers = [
     const rules = db.rateRules.filter((r) => r.feeId === f.id && matches(r)).sort((a, b) => specificity(normMatchers(b)) - specificity(normMatchers(a)));
     const rule = rules[0];
     if (!rule) return HttpResponse.json({ ...base, eligible: true, reason: "No rate rule matches this payer", amount: null, rateRuleId: null, minInstalment: null });
-    const inst = db.instalmentRules.find((r) => r.feeId === f.id && r.department === payer.department);
+    // a student's own level rule wins over the all-levels rule; applicants only get the all-levels rule
+    const deptRules = db.instalmentRules.filter((r) => r.feeId === f.id && r.department === payer.department);
+    const inst = (payer.kind === "STUDENT" ? deptRules.find((r) => r.level === payer.level) : undefined) ?? deptRules.find((r) => r.level === null);
     return HttpResponse.json({
       ...base, eligible: true, reason: null, amount: rule.amount, rateRuleId: rule.id,
       minInstalment: f.allowInstalments ? (inst?.minInstalment ?? f.defaultMinInstalment) : null,
@@ -870,28 +883,32 @@ export const apiHandlers = [
     audit(me, "eligibilityRule.delete", "Fee", params.id, rule, null);
     return HttpResponse.json({ deleted: true });
   }),
-  route("adminSetInstalment", async ({ request, params, me }) => {
+  route("adminSetInstalment", async ({ request, params, url, me }) => {
     const f = db.fees.find((x) => x.id === params.id);
     if (!f) return fail(404, "NOT_FOUND", "Fee not found");
+    const level = instalmentLevel(url);
+    if (level instanceof Response) return level;
     const b = await body<{ minInstalment?: string }>(request);
     if (!b.minInstalment || !/^[1-9]\d{0,17}$/.test(String(b.minInstalment))) return invalid("minInstalment must be a positive integer string of minor units");
     const code = params.department;
     const badDept = unusableDepartment([code]);
     if (badDept) return badDept;
-    let rule = db.instalmentRules.find((r) => r.feeId === f.id && r.department === code);
+    let rule = db.instalmentRules.find((r) => r.feeId === f.id && r.department === code && r.level === level);
     const before = rule ? { ...rule } : null;
     if (rule) Object.assign(rule, { minInstalment: String(b.minInstalment), updatedBy: me.id, updatedAt: now() });
     else {
-      rule = { id: uuid(7), feeId: f.id, department: code, minInstalment: String(b.minInstalment), updatedBy: me.id, updatedAt: now() };
+      rule = { id: uuid(7), feeId: f.id, department: code, level, minInstalment: String(b.minInstalment), updatedBy: me.id, updatedAt: now() };
       db.instalmentRules.push(rule);
     }
     audit(me, "instalmentRule.set", "Fee", f.id, before, rule);
     return HttpResponse.json(rule);
   }),
-  route("adminDeleteInstalment", ({ params, me }) => {
+  route("adminDeleteInstalment", ({ params, url, me }) => {
+    const level = instalmentLevel(url);
+    if (level instanceof Response) return level;
     const code = params.department;
-    const idx = db.instalmentRules.findIndex((r) => r.feeId === params.id && r.department === code);
-    if (idx < 0) return fail(404, "NOT_FOUND", "No instalment rule for this department");
+    const idx = db.instalmentRules.findIndex((r) => r.feeId === params.id && r.department === code && r.level === level);
+    if (idx < 0) return fail(404, "NOT_FOUND", level === null ? "No instalment rule for this department" : `No instalment rule for this department at level ${level}`);
     const [rule] = db.instalmentRules.splice(idx, 1);
     audit(me, "instalmentRule.delete", "Fee", params.id, rule, null);
     return HttpResponse.json({ deleted: true });
