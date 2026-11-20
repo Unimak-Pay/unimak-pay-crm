@@ -4,6 +4,7 @@ import {
   formatSle,
   formatSleNumber,
   formatSleOrDash,
+  formatSleSigned,
   parseSleInput,
   sleInWords,
   subtractMinor,
@@ -100,4 +101,13 @@ describe("sleInWords", () => {
     ["100000000", "One million leones"],
     ["2500000021", "Twenty-five million leones and twenty-one cents"],
   ])("%s", (minor, words) => expect(sleInWords(minor)).toBe(words));
+});
+
+describe("formatSleSigned", () => {
+  it.each([
+    ["25000", "+SLE 250.00"],
+    ["-25000", "-SLE 250.00"],
+    ["0", "SLE 0.00"],
+    ["-5", "-SLE 0.05"],
+  ])("%s → %s", (minor, out) => expect(formatSleSigned(minor)).toBe(out));
 });

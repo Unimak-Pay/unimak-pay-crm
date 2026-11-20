@@ -26,10 +26,12 @@ function RuleEditor({
   feeId,
   rule,
   onDone,
+  onSaved,
 }: {
   feeId: string;
   rule?: RateRule;
   onDone(): void;
+  onSaved(): void;
 }) {
   const qc = useQueryClient();
   const [values, setValues] = useState<MatcherValues>(rule ? fromMatchers(rule) : EMPTY_MATCHERS);
@@ -44,6 +46,7 @@ function RuleEditor({
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.fee(feeId) });
       void qc.invalidateQueries({ queryKey: qk.feesRoot });
+      onSaved();
       onDone();
     },
   });
@@ -111,7 +114,8 @@ function RuleEditor({
   );
 }
 
-export function RateRules({ feeId, rules }: { feeId: string; rules: RateRule[] }) {
+/** `onChanged` fires after a rule is saved or deleted (existing obligations keep their price). */
+export function RateRules({ feeId, rules, onChanged }: { feeId: string; rules: RateRule[]; onChanged(): void }) {
   const qc = useQueryClient();
   const { departments } = useAcademics();
   const canOp = useCanOp();
@@ -123,6 +127,7 @@ export function RateRules({ feeId, rules }: { feeId: string; rules: RateRule[] }
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.fee(feeId) });
       void qc.invalidateQueries({ queryKey: qk.feesRoot });
+      onChanged();
     },
   });
   // Most specific first, then by amount: the order the backend matches in.
@@ -158,7 +163,7 @@ export function RateRules({ feeId, rules }: { feeId: string; rules: RateRule[] }
             )}
             {sorted.map((r) =>
               editing === r.id ? (
-                <RuleEditor key={r.id} feeId={feeId} rule={r} onDone={() => setEditing(null)} />
+                <RuleEditor key={r.id} feeId={feeId} rule={r} onDone={() => setEditing(null)} onSaved={onChanged} />
               ) : (
                 <TableRow key={r.id}>
                   <TableCell>
@@ -190,7 +195,7 @@ export function RateRules({ feeId, rules }: { feeId: string; rules: RateRule[] }
                 </TableRow>
               ),
             )}
-            {editing === "new" && <RuleEditor feeId={feeId} onDone={() => setEditing(null)} />}
+            {editing === "new" && <RuleEditor feeId={feeId} onDone={() => setEditing(null)} onSaved={onChanged} />}
           </TableBody>
         </Table>
       </div>

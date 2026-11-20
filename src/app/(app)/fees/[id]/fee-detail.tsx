@@ -20,6 +20,7 @@ import { MoneyInput, toMajorInput, toMinorOrNull, zSleOptional } from "@/compone
 import { GatedButton, RequireOp } from "@/components/permission";
 import { ErrorState, Field, Fields, LoadingBlock, PageHeader } from "@/components/states";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -30,6 +31,7 @@ import { EligibilityRules } from "./eligibility";
 import { Instalments } from "./instalments";
 import { Preview } from "./preview";
 import { RateRules } from "./rate-rules";
+import { RepriceButton, RepriceDialog } from "./reprice";
 
 type FeeDetail = components["schemas"]["FeeDetail"];
 type FeeStatus = components["schemas"]["FeeStatus"];
@@ -168,6 +170,9 @@ function Detail({ id }: { id: string }) {
   const { values, set } = useUrlFilters(TAB_KEYS);
   const tab = (TABS as readonly string[]).includes(values.tab) ? values.tab : "rates";
   const [refused, setRefused] = useState<string | null>(null);
+  // set after a rate rule is saved or deleted: existing obligations still have the old price
+  const [rulesChanged, setRulesChanged] = useState(false);
+  const [repricing, setRepricing] = useState(false);
 
   if (q.isPending) return <LoadingBlock rows={8} />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
@@ -236,8 +241,24 @@ function Detail({ id }: { id: string }) {
           <TabsTrigger value="instalments">Instalments ({fee.instalmentRules.length})</TabsTrigger>
           <TabsTrigger value="preview">Preview</TabsTrigger>
         </TabsList>
-        <TabsContent value="rates" className="pt-2">
-          <RateRules feeId={fee.id} rules={fee.rateRules} />
+        <TabsContent value="rates" className="space-y-3 pt-2">
+          {rulesChanged && fee.status !== "DRAFT" && (
+            <Alert data-testid="reprice-suggestion">
+              <AlertTitle>Rate rules changed</AlertTitle>
+              <AlertDescription>
+                <p>New obligations use the new rules. The {fee._count.obligations} existing obligations keep the price they were created with until you re-price them.</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <RepriceButton variant="default" onClick={() => setRepricing(true)} />
+                  <Button size="sm" variant="ghost" onClick={() => setRulesChanged(false)}>
+                    Not now
+                  </Button>
+                </div>
+              </AlertDescription>
+            </Alert>
+          )}
+          <RateRules feeId={fee.id} rules={fee.rateRules} onChanged={() => setRulesChanged(true)} />
+          {!rulesChanged && fee.status !== "DRAFT" && <RepriceButton onClick={() => setRepricing(true)} />}
+          <RepriceDialog feeId={fee.id} feeName={fee.name} open={repricing} onOpenChange={setRepricing} onApplied={() => setRulesChanged(false)} />
         </TabsContent>
         <TabsContent value="eligibility" className="pt-2">
           <EligibilityRules feeId={fee.id} rules={fee.eligibilityRules} payerKind={ft.payerKind} />

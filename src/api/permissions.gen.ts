@@ -7,6 +7,7 @@ export type Permission = components["schemas"]["Permission"];
 export const OPERATIONS = {
   adminAddEligibility: { method: "post", path: "/v1/admin/fees/{id}/eligibility-rules", permission: "fees.manage" },
   adminAddRateRule: { method: "post", path: "/v1/admin/fees/{id}/rate-rules", permission: "fees.manage" },
+  adminApplyReprice: { method: "post", path: "/v1/admin/fees/{id}/reprice", permission: "fees.manage" },
   adminAuditLog: { method: "get", path: "/v1/admin/audit-log", permission: "audit.read" },
   adminBanks: { method: "get", path: "/v1/admin/banks", permission: "payouts.read" },
   adminCreateDepartment: { method: "post", path: "/v1/admin/departments", permission: "academics.manage" },
@@ -41,6 +42,7 @@ export const OPERATIONS = {
   adminMe: { method: "get", path: "/v1/admin/me", permission: null },
   adminOutbox: { method: "get", path: "/v1/admin/outbox", permission: "outbox.read" },
   adminPreview: { method: "get", path: "/v1/admin/fees/{id}/preview", permission: "fees.read" },
+  adminPreviewReprice: { method: "get", path: "/v1/admin/fees/{id}/reprice", permission: "fees.manage" },
   adminProvisionAccounts: { method: "post", path: "/v1/admin/financial-accounts/provision", permission: "accounts.manage" },
   adminReconcilePayment: { method: "post", path: "/v1/admin/payments/{id}/reconcile", permission: "payments.reconcile" },
   adminReconciliation: { method: "get", path: "/v1/admin/reconciliation", permission: "reconciliation.read" },

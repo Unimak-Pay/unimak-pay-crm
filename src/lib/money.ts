@@ -33,6 +33,11 @@ export function formatSleNumber(minor: string | bigint, opts: { abs?: boolean } 
   return `${neg && !opts.abs ? "-" : ""}${major}.${cents}`;
 }
 
+/** A difference: `"5000"` → `"+SLE 50.00"`, `"-5000"` → `"-SLE 50.00"`, `"0"` → `"SLE 0.00"`. */
+export function formatSleSigned(minor: string | bigint): string {
+  return `${toBigInt(minor) > 0n ? "+" : ""}${formatSle(minor)}`;
+}
+
 /** Like formatSle but tolerates `null`/`undefined` (renders an em dash). */
 export function formatSleOrDash(minor: string | bigint | null | undefined): string {
   return minor === null || minor === undefined || minor === "" ? "—" : formatSle(minor);

@@ -389,5 +389,90 @@ export function createDb() {
     { providerId: "uba001", name: "UBA Sierra Leone", active: false, canPayTo: false },
   ];
 
-  return { faculties, departments, users, feeTypes, accounts, fees, rateRules, eligibilityRules, instalmentRules, payments, transfers, ledger, payouts, outbox, runs, items, webhookEvents, audit, banks };
+  const obligations = seedObligations(fees, feeTypes, rateRules);
+
+  return { faculties, departments, users, feeTypes, accounts, fees, rateRules, eligibilityRules, instalmentRules, payments, transfers, ledger, payouts, outbox, runs, items, webhookEvents, audit, banks, obligations };
+}
+
+/** A payer's profile as the backend matches it against rules. */
+export type PayerProfile = {
+  kind: S["PayerKind"];
+  programCode: string;
+  department: string | null;
+  level: number | null;
+  residency: S["Residency"];
+  intake: string;
+  finalYear: boolean | null;
+};
+
+/**
+ * Obligations exist only for re-pricing (GET/POST /fees/{id}/reprice); nothing else lists them.
+ * `entryTypes` is the ledger entry types on the obligation, `paymentInProgress` an unexpired
+ * INITIATED/PENDING payment. Seeded after everything else, with their own RNG, so the other
+ * fixtures (ids, payments) don't shift.
+ */
+export type MockObligation = {
+  id: string;
+  feeId: string;
+  payer: { kind: "applicant" | "student"; ref: string; fullName: string };
+  profile: PayerProfile;
+  status: "OPEN" | "PAID";
+  amount: string;
+  rateRuleId: string | null;
+  entryTypes: string[];
+  paymentInProgress: boolean;
+};
+
+function seedObligations(fees: S["Fee"][], feeTypes: S["FeeType"][], rateRules: S["RateRule"][]): MockObligation[] {
+  const r = rng(7);
+  const pick = <T,>(a: readonly T[]) => a[Math.floor(r() * a.length)];
+  const out: MockObligation[] = [];
+  const priced = (feeId: string, p: PayerProfile) => {
+    const m = rateRules
+      .filter(
+        (x) =>
+          x.feeId === feeId &&
+          (!x.programCode || x.programCode === p.programCode) &&
+          (!x.department || x.department === p.department) &&
+          (x.level == null || x.level === p.level) &&
+          (!x.residency || x.residency === p.residency) &&
+          (!x.intake || x.intake === p.intake),
+      )
+      .sort((a, b) => [b.programCode, b.department, b.level, b.residency, b.intake].filter((v) => v != null).length - [a.programCode, a.department, a.level, a.residency, a.intake].filter((v) => v != null).length);
+    return m[0];
+  };
+  const add = (
+    feeCode: string,
+    n: number,
+    [programCode, department]: readonly [string, string],
+    o: { residency?: S["Residency"]; status?: "OPEN" | "PAID"; entryTypes?: string[]; paymentInProgress?: boolean } = {},
+  ) => {
+    const ftIdx = feeTypes.findIndex((t) => t.code === feeCode);
+    const fee = fees[ftIdx];
+    const level = 1 + Math.floor(r() * 4);
+    const profile: PayerProfile = { kind: "STUDENT", programCode, department, level, residency: o.residency ?? "LOCAL", intake: "2025-SEP", finalYear: level === 4 };
+    const rule = priced(fee.id, profile);
+    out.push({
+      id: uuid(20), feeId: fee.id, payer: { kind: "student", ref: `UNI-2025-${String(500 + n).padStart(4, "0")}`, fullName: `${pick(FIRST)} ${pick(LAST)}` },
+      profile, status: o.status ?? "OPEN", amount: rule?.amount ?? "0", rateRuleId: rule?.id ?? null,
+      entryTypes: o.entryTypes ?? ["CHARGE"], paymentInProgress: o.paymentInProgress ?? false,
+    });
+  };
+  const [CS, IT, ECON, NURS, LAW] = PROGRAMS;
+  // Tuition: everyone at the current price; every skip reason that can arise from data.
+  add("TUITION", 1, CS);
+  add("TUITION", 2, IT);
+  add("TUITION", 3, ECON);
+  add("TUITION", 4, LAW);
+  add("TUITION", 5, CS, { residency: "INTERNATIONAL" });
+  add("TUITION", 6, NURS);
+  add("TUITION", 7, NURS, { residency: "INTERNATIONAL" });
+  add("TUITION", 8, CS, { status: "PAID", entryTypes: ["CHARGE", "PAYMENT"] });
+  add("TUITION", 9, ECON, { entryTypes: ["CHARGE", "PAYMENT"] });
+  add("TUITION", 10, IT, { paymentInProgress: true });
+  // Department levy (eligibility: Computer Science only): nothing to change, one no longer eligible.
+  add("DEPT", 11, CS);
+  add("DEPT", 12, CS);
+  add("DEPT", 13, ECON);
+  return out;
 }

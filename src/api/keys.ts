@@ -21,6 +21,7 @@ export const qk = {
   fee: (id: string) => ["fees", "detail", id] as const,
   feesRoot: ["fees"] as const,
   preview: (id: string, kind: string, ref: string) => ["fees", "preview", id, kind, ref] as const,
+  reprice: (id: string) => ["fees", "reprice", id] as const,
   payouts: (f: object = {}) => ["payouts", "list", f] as const,
   payout: (id: string) => ["payouts", "detail", id] as const,
   payoutsRoot: ["payouts"] as const,

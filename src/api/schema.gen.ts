@@ -170,6 +170,88 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/dot/payers/{kind}/{ref}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Look up a payer and what they owe
+         * @description Fetches from the university portal (cached) and creates any missing obligations.
+         *     Returns the full name and academic details; the phone is masked.
+         */
+        get: operations["dotGetPayer"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/dot/quotes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate an amount without creating anything */
+        post: operations["dotPostQuote"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/dot/payments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start a payment and get the order for Dash's payment sheet
+         * @description Holds the amount on the obligation (15 minutes) and returns `order` and `financialAccountId`
+         *     to pass unchanged to `dash.payments.request()`. No Monime call is made here.
+         *     Idempotent on the `Idempotency-Key` header: a retry returns the same payment and order
+         *     (409 `IDEMPOTENCY_CONFLICT` if the key was used for a different obligation or amount).
+         *     Show the payer `paymentRef` for later status checks.
+         */
+        post: operations["dotPostPayment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/dot/payments/status/{ref}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Payment status by what the payer holds
+         * @description `ref` is our 8-digit payment ref or Monime's order number. Payer details are masked.
+         */
+        get: operations["dotGetPaymentStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/monime": {
         parameters: {
             query?: never;
@@ -688,6 +770,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/fees/{id}/reprice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What re-pricing would change (writes nothing)
+         * @description Obligations copy their amount from the best rate rule when they're created; editing a rule
+         *     doesn't change them. This lists what applying would do: untouched obligations (OPEN, no
+         *     payment or refund, no payment in progress) move to the current best rule; the rest are
+         *     listed under `skipped` with the reason, for a person to decide.
+         */
+        get: operations["adminPreviewReprice"];
+        put?: never;
+        /**
+         * Move untouched obligations to the current rate rules
+         * @description Decides again under lock, then for each change appends an ADJUSTMENT ledger entry for the
+         *     difference and updates the obligation's amount. Audited as `fee.reprice`. Running it again
+         *     changes nothing.
+         */
+        post: operations["adminApplyReprice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/fees/{id}/rate-rules": {
         parameters: {
             query?: never;
@@ -1194,6 +1305,110 @@ export interface components {
          * @example 15540719
          */
         PaymentRef: string;
+        DotPayer: {
+            /** @enum {string} */
+            kind: "applicant" | "student";
+            /** @example UNI-2026-0001 */
+            ref: string;
+            /** @example Abdul Koroma */
+            fullName: string;
+            /** @example +232*****001 */
+            maskedPhone: string | null;
+            /** @example BSC-CS */
+            programCode: string;
+            /** @example BSC-CS · Level 1 */
+            programLine: string;
+            /** @example COMPUTER-SCI */
+            department: string | null;
+            /**
+             * @description null when the department is unknown or not yet listed
+             * @example Computer Science
+             */
+            departmentName: string | null;
+            facultyCode: string | null;
+            facultyName: string | null;
+            /** @description Students only */
+            level: number | null;
+            /** @description Students only */
+            finalYear: boolean | null;
+            residency: components["schemas"]["Residency"];
+            /** @example 2026-SEP */
+            intake: string;
+            /** @description Applicants only (e.g. APPLIED, ADMITTED) */
+            applicantStatus: string | null;
+            /** @description true when the portal was down and this is the last snapshot */
+            stale: boolean;
+        };
+        DotAmountRequest: {
+            /** Format: uuid */
+            obligationId: string;
+            amount: components["schemas"]["MinorAmount"];
+        };
+        /** @description The `order` for dash.payments.request(). `reference` is our payment id; unitPrice.value is a number of minor units. */
+        DashOrder: {
+            /** @example UNIMAK Tuition 2026/27 */
+            name: string;
+            /** Format: uuid */
+            reference: string;
+            lineItems: {
+                name: string;
+                unitPrice: {
+                    /** @constant */
+                    currency: "SLE";
+                    /** @example 150000 */
+                    value: number;
+                };
+                /** @constant */
+                quantity: 1;
+            }[];
+            metadata: {
+                [key: string]: string;
+            };
+        };
+        RepriceReport: {
+            fee: {
+                /** Format: uuid */
+                id: string;
+                name: string;
+            };
+            applied: boolean;
+            changes: {
+                /** Format: uuid */
+                obligationId: string;
+                payer: components["schemas"]["RepricePayer"];
+                /** @description SLE minor units */
+                current: string;
+                /** @description SLE minor units */
+                proposed: string;
+                /** @description proposed - current, may be negative */
+                difference: string;
+                /** Format: uuid */
+                rateRuleId: string;
+            }[];
+            skipped: {
+                /** Format: uuid */
+                obligationId: string;
+                payer: components["schemas"]["RepricePayer"];
+                /** @description SLE minor units */
+                current: string;
+                /** @enum {string} */
+                reason: "PAID" | "HAS_PAYMENTS" | "PAYMENT_IN_PROGRESS" | "NOT_ELIGIBLE" | "NO_RATE_RULE" | "AMBIGUOUS_RATE_RULE";
+            }[];
+            /** @description Obligations already at the current price */
+            unchanged: number;
+            totals: {
+                obligations: number;
+                changed: number;
+                /** @description Sum of differences, SLE minor units */
+                difference: string;
+            };
+        };
+        RepricePayer: {
+            /** @enum {string} */
+            kind: "applicant" | "student";
+            ref: string;
+            fullName: string;
+        };
         /** @enum {string} */
         Permission: "fees.read" | "fees.manage" | "instalments.manage" | "payers.read" | "payers.adjust" | "payments.read" | "payments.export" | "payments.refund" | "payments.reconcile" | "receipts.resend" | "accounts.read" | "accounts.manage" | "payouts.read" | "payouts.manage" | "transfers.read" | "transfers.retry" | "reconciliation.read" | "reconciliation.manage" | "outbox.read" | "outbox.retry" | "reports.read" | "audit.read" | "users.manage" | "settings.manage" | "academics.manage";
         CountAmount: {
@@ -1964,7 +2179,7 @@ export interface components {
         /** @enum {string} */
         Channel: "USSD" | "DOTS";
         /** @enum {string} */
-        CollectionMethod: "PAYMENT_CODE" | "USSD_FLOW";
+        CollectionMethod: "PAYMENT_CODE" | "USSD_FLOW" | "DASH_SHEET";
         /** @enum {string} */
         FeeStatus: "DRAFT" | "ACTIVE" | "CLOSED";
         /** @enum {string} */
@@ -2052,6 +2267,16 @@ export interface components {
         /** @description Amount or rule not acceptable */
         Unprocessable: {
             headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description Too many requests from this IP; retry after `Retry-After` seconds */
+        RateLimited: {
+            headers: {
+                "Retry-After"?: number;
                 [name: string]: unknown;
             };
             content: {
@@ -2392,6 +2617,137 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    dotGetPayer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: components["parameters"]["PayerKind"];
+                ref: components["parameters"]["PayerRef"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Payer and obligations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        payer: components["schemas"]["DotPayer"];
+                        obligations: components["schemas"]["Obligation"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    dotPostQuote: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DotAmountRequest"];
+            };
+        };
+        responses: {
+            /** @description Valid amount */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        amount: components["schemas"]["MinorAmount"];
+                        payable: components["schemas"]["MinorAmount"];
+                        minInstalment: components["schemas"]["MinorAmount"];
+                        /** @constant */
+                        valid: true;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    dotPostPayment: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description A new random key per payment (e.g. `dash.crypto.randomUUID()`), reused on retries. */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DotAmountRequest"];
+            };
+        };
+        responses: {
+            /** @description Payment started */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        paymentId: string;
+                        paymentRef: components["schemas"]["PaymentRef"];
+                        status: components["schemas"]["PaymentStatus"];
+                        amount: components["schemas"]["Money"];
+                        /** Format: date-time */
+                        expiresAt: string;
+                        order: components["schemas"]["DashOrder"];
+                        /** @description Monime financial account of the fee type; pass to dash.payments.request(). */
+                        financialAccountId: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    dotGetPaymentStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ref: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentStatusView"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
         };
     };
     webhookReceive: {
@@ -3560,6 +3916,58 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
+    adminPreviewReprice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepriceReport"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    adminApplyReprice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Applied */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepriceReport"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
     adminAddRateRule: {
         parameters: {
             query?: never;
@@ -4428,6 +4836,9 @@ export const pathsV1AdminFeeTypesPostRequestBodyContentApplicationJsonPayerKindV
 export const pathsV1AdminFeeTypesPostRequestBodyContentApplicationJsonRecurrenceValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/fee-types"]["post"]["requestBody"]["content"]["application/json"]["recurrence"]> = ["ONCE", "PER_YEAR"];
 export const pathsV1AdminFeesIdPreviewGetParametersQueryKindValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/fees/{id}/preview"]["get"]["parameters"]["query"]["kind"]> = ["applicant", "student"];
 export const pathsDevMonimeSimulateWebhookPostRequestBodyContentApplicationJsonOutcomeValues: ReadonlyArray<FlattenedDeepRequired<paths>["/dev/monime/simulate-webhook"]["post"]["requestBody"]["content"]["application/json"]["outcome"]> = ["completed", "failed", "expired"];
+export const dotPayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DotPayer"]["kind"]> = ["applicant", "student"];
+export const repriceReportSkippedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RepriceReport"]["skipped"]["reason"]> = ["PAID", "HAS_PAYMENTS", "PAYMENT_IN_PROGRESS", "NOT_ELIGIBLE", "NO_RATE_RULE", "AMBIGUOUS_RATE_RULE"];
+export const repricePayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RepricePayer"]["kind"]> = ["applicant", "student"];
 export const permissionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Permission"]> = ["fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export", "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "accounts.manage", "payouts.read", "payouts.manage", "transfers.read", "transfers.retry", "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage", "academics.manage"];
 export const payer_payerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Payer"]["kind"]> = ["applicant", "student"];
 export const obligationStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Obligation"]["status"]> = ["OPEN", "PAID"];
@@ -4437,7 +4848,7 @@ export const inviteOutcomeStatusValues: ReadonlyArray<FlattenedDeepRequired<comp
 export const webhookAckResultValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["WebhookAck"]["result"]> = ["PROCESSED", "IGNORED", "UNMATCHED", "DUPLICATE"];
 export const adminRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AdminRole"]> = ["SUPER_ADMIN", "BURSAR", "FINANCE_OFFICER", "HEAD_OF_DEPARTMENT", "DEAN", "AUDITOR"];
 export const channelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Channel"]> = ["USSD", "DOTS"];
-export const collectionMethodValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CollectionMethod"]> = ["PAYMENT_CODE", "USSD_FLOW"];
+export const collectionMethodValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CollectionMethod"]> = ["PAYMENT_CODE", "USSD_FLOW", "DASH_SHEET"];
 export const feeStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FeeStatus"]> = ["DRAFT", "ACTIVE", "CLOSED"];
 export const financialAccountPurposeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FinancialAccountPurpose"]> = ["FEE_TYPE", "PLATFORM"];
 export const ledgerEntryTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["LedgerEntryType"]> = ["CHARGE", "PAYMENT", "ADJUSTMENT", "REFUND"];

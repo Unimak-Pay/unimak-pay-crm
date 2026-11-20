@@ -320,6 +320,51 @@ function tieWith(m: Matchers, others: Matchers[]): Matchers | null {
 function describeMatchers(m: Matchers) {
   return MATCHER_KEYS.filter((k) => m[k] !== null).map((k) => `${k}=${m[k]}`).join(", ") || "everyone";
 }
+type Profile = { programCode: string; department: string | null; level: number | null; residency: S["Residency"]; intake: string; finalYear: boolean | null };
+function matchesProfile(r: Partial<Matchers> & { finalYear?: boolean | null }, p: Profile) {
+  return (
+    (!r.programCode || r.programCode === p.programCode) &&
+    (!r.department || r.department === p.department) &&
+    (r.level == null || r.level === p.level) &&
+    (!r.residency || r.residency === p.residency) &&
+    (!r.intake || r.intake === p.intake) &&
+    (r.finalYear == null || r.finalYear === p.finalYear)
+  );
+}
+
+type RepriceReport = S["RepriceReport"];
+/** Mirrors the backend's decideReprice + AdminRepriceService.plan. */
+function planReprice(fee: S["Fee"]): RepriceReport {
+  const obligations = db.obligations.filter((o) => o.feeId === fee.id);
+  const elig = db.eligibilityRules.filter((r) => r.feeId === fee.id);
+  const rates = db.rateRules.filter((r) => r.feeId === fee.id);
+  const report: RepriceReport = {
+    fee: { id: fee.id, name: fee.name }, applied: false, changes: [], skipped: [], unchanged: 0,
+    totals: { obligations: obligations.length, changed: 0, difference: "0" },
+  };
+  let total = 0n;
+  for (const o of obligations) {
+    const skip = (reason: RepriceReport["skipped"][number]["reason"]) => report.skipped.push({ obligationId: o.id, payer: o.payer, current: o.amount, reason });
+    if (o.status === "PAID") { skip("PAID"); continue; }
+    if (o.entryTypes.some((t) => t === "PAYMENT" || t === "REFUND")) { skip("HAS_PAYMENTS"); continue; }
+    if (o.paymentInProgress) { skip("PAYMENT_IN_PROGRESS"); continue; }
+    if (elig.length && !elig.some((r) => matchesProfile(r, o.profile))) { skip("NOT_ELIGIBLE"); continue; }
+    const matching = rates.filter((r) => matchesProfile(r, o.profile));
+    const top = Math.max(-1, ...matching.map((r) => specificity(normMatchers(r))));
+    const best = matching.filter((r) => specificity(normMatchers(r)) === top);
+    if (best.length === 0) { skip("NO_RATE_RULE"); continue; }
+    if (best.length > 1) { skip("AMBIGUOUS_RATE_RULE"); continue; }
+    const rule = best[0];
+    if (rule.amount === o.amount) { report.unchanged++; continue; }
+    const difference = BigInt(rule.amount) - BigInt(o.amount);
+    report.changes.push({ obligationId: o.id, payer: o.payer, current: o.amount, proposed: rule.amount, difference: difference.toString(), rateRuleId: rule.id });
+    report.totals.changed++;
+    total += difference;
+  }
+  report.totals.difference = total.toString();
+  return report;
+}
+
 function feeDetail(fee: S["Fee"]): S["FeeDetail"] {
   const ft = db.feeTypes.find((t) => t.id === fee.feeTypeId)!;
   return {
@@ -721,13 +766,7 @@ export const apiHandlers = [
     };
     const ft = db.feeTypes.find((t) => t.id === f.feeTypeId)!;
     const base = { payer, fee: { id: f.id, name: f.name, status: f.status, feeType: ft.code } };
-    const matches = (r: Partial<Matchers> & { finalYear?: boolean | null }) =>
-      (!r.programCode || r.programCode === payer.programCode) &&
-      (!r.department || r.department === payer.department) &&
-      (r.level == null || r.level === payer.level) &&
-      (!r.residency || r.residency === payer.residency) &&
-      (!r.intake || r.intake === payer.intake) &&
-      (r.finalYear == null || r.finalYear === payer.finalYear);
+    const matches = (r: Partial<Matchers> & { finalYear?: boolean | null }) => matchesProfile(r, payer);
     if (ft.payerKind !== payer.kind) return HttpResponse.json({ ...base, eligible: false, reason: `This fee is for ${ft.payerKind.toLowerCase()}s`, amount: null, rateRuleId: null, minInstalment: null });
     const elig = db.eligibilityRules.filter((r) => r.feeId === f.id);
     if (elig.length && !elig.some(matches)) return HttpResponse.json({ ...base, eligible: false, reason: "No eligibility rule matches", amount: null, rateRuleId: null, minInstalment: null });
@@ -739,6 +778,31 @@ export const apiHandlers = [
       ...base, eligible: true, reason: null, amount: rule.amount, rateRuleId: rule.id,
       minInstalment: f.allowInstalments ? (inst?.minInstalment ?? f.defaultMinInstalment) : null,
     });
+  }),
+  route("adminPreviewReprice", ({ params }) => {
+    const f = db.fees.find((x) => x.id === params.id);
+    if (!f) return fail(404, "NOT_FOUND", "Fee not found");
+    if (f.status === "DRAFT") return fail(409, "INVALID_STATE", "A draft fee has no obligations to re-price");
+    return HttpResponse.json(planReprice(f));
+  }),
+  route("adminApplyReprice", ({ params, me }) => {
+    const f = db.fees.find((x) => x.id === params.id);
+    if (!f) return fail(404, "NOT_FOUND", "Fee not found");
+    if (f.status === "DRAFT") return fail(409, "INVALID_STATE", "A draft fee has no obligations to re-price");
+    const report = planReprice(f);
+    for (const c of report.changes) {
+      db.ledger.push({
+        id: uuid(10), obligationId: c.obligationId, type: "ADJUSTMENT", amount: c.difference, paymentId: null,
+        memo: `reprice: ${c.current} → ${c.proposed} (rate rule ${c.rateRuleId})`, createdBy: `admin:${me.id}`, createdAt: now(),
+      });
+      Object.assign(db.obligations.find((o) => o.id === c.obligationId)!, { amount: c.proposed, rateRuleId: c.rateRuleId });
+    }
+    audit(me, "fee.reprice", "Fee", f.id, null, {
+      changed: report.changes.map((c) => ({ obligationId: c.obligationId, payer: c.payer.ref, from: c.current, to: c.proposed })),
+      skipped: report.skipped.map((x) => ({ obligationId: x.obligationId, payer: x.payer.ref, reason: x.reason })),
+      difference: report.totals.difference,
+    });
+    return HttpResponse.json({ ...report, applied: true });
   }),
   route("adminAddRateRule", async ({ request, params, me }) => {
     const f = db.fees.find((x) => x.id === params.id);
