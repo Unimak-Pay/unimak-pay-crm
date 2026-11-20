@@ -7,6 +7,7 @@ import { api, call } from "@/api/client";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
 import { useMe } from "@/auth/auth-provider";
+import { useScopeNames } from "@/components/academics";
 import { CopyValue, DateTime, Money, StatusBadge } from "@/components/format";
 import { Can, useCanOp } from "@/components/permission";
 import { EmptyState, ErrorState, LoadingBlock, PageHeader } from "@/components/states";
@@ -35,7 +36,12 @@ function Attention() {
   if (q.isPending) return <LoadingBlock rows={2} />;
   if (q.error) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
   const { counts, lastRun } = q.data;
-  const total = ATTENTION.reduce((s, a) => s + counts[a.key], 0);
+  // transfer counts are null without transfers.read (super admins only): those tiles are hidden
+  const tiles = ATTENTION.flatMap((a) => {
+    const n = counts[a.key];
+    return n === null ? [] : [{ ...a, n }];
+  });
+  const total = tiles.reduce((s, a) => s + a.n, 0);
   return (
     <section aria-labelledby="attention-h" className="space-y-2">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -55,8 +61,7 @@ function Attention() {
         </span>
       </div>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {ATTENTION.map((a) => {
-          const n = counts[a.key];
+        {tiles.map(({ n, ...a }) => {
           return (
             <Link
               key={a.key}
@@ -182,6 +187,7 @@ function LatestPayments() {
 
 export function Overview() {
   const me = useMe();
+  const scope = useScopeNames(me.departments, me.faculties);
   const canOp = useCanOp();
   const anything = ["adminReconciliation", "adminReportsSummary", "adminListAccounts", "adminListPayments"].some((o) =>
     canOp(o as Parameters<typeof canOp>[0]),
@@ -190,7 +196,11 @@ export function Overview() {
     <div className="space-y-6">
       <PageHeader
         title="Overview"
-        description={me.departmentScoped ? `Payments for ${me.departments.join(", ") || "no departments"}` : "Fee collections across UNIMAK"}
+        description={
+          me.departmentScoped
+            ? `Payments for ${[scope.faculties.join(", "), scope.departments.join(", ") || "no departments"].filter(Boolean).join(": ")}`
+            : "Fee collections across UNIMAK"
+        }
       />
       {!anything && <EmptyState title="Nothing to show for your role">Use the navigation to open the pages you have access to.</EmptyState>}
       <Can op="adminReconciliation">

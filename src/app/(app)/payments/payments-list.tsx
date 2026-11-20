@@ -9,6 +9,7 @@ import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
 import { channelValues, componentsParametersSortValues, paymentStatusValues } from "@/api/schema.gen";
 import { useMe } from "@/auth/auth-provider";
+import { AcademicFilters, useScopeNames } from "@/components/academics";
 import { columnsFor, DataTable, minorSortValue } from "@/components/data-table";
 import { DayRangeFilter, FilterBar, FilterSearch, FilterSelect } from "@/components/filters";
 import { CopyValue, DateTime, Money, StatusBadge } from "@/components/format";
@@ -21,7 +22,7 @@ import { dayEndIso, dayStartIso, isDay } from "@/lib/time";
 type Payment = components["schemas"]["AdminPayment"];
 type Sort = NonNullable<components["parameters"]["Sort"]>;
 
-const KEYS = ["status", "channel", "feeType", "payerRef", "ref", "from", "to", "sort"] as const;
+const KEYS = ["status", "channel", "feeType", "faculty", "department", "payerRef", "ref", "from", "to", "sort"] as const;
 const STATUSES = paymentStatusValues;
 const SORTS = componentsParametersSortValues;
 
@@ -39,6 +40,11 @@ const columns = [
         <div className="truncate font-mono text-[11px] text-muted-foreground">
           {c.row.original.payer.ref} · {c.row.original.payer.programCode}
         </div>
+        {c.row.original.payer.departmentName && (
+          <div className="truncate text-[11px] text-muted-foreground" title={c.row.original.payer.facultyName ?? undefined}>
+            {c.row.original.payer.departmentName}
+          </div>
+        )}
       </div>
     ),
   }),
@@ -59,6 +65,8 @@ function filtersToQuery(v: Record<(typeof KEYS)[number], string>) {
     status: v.status as Payment["status"] | "",
     channel: v.channel as Payment["channel"] | "",
     feeType: v.feeType,
+    faculty: v.faculty,
+    department: v.department,
     payerRef: v.payerRef,
     ref: v.ref,
     from: isDay(v.from) ? dayStartIso(v.from) : "",
@@ -91,6 +99,7 @@ function ExportButton({ query }: { query: Record<string, string | undefined> }) 
 
 function List() {
   const me = useMe();
+  const scope = useScopeNames(me.departments, me.faculties);
   const canOp = useCanOp();
   const { values, set, reset, active } = useUrlFilters(KEYS);
   const sort: Sort = (SORTS as readonly string[]).includes(values.sort) ? (values.sort as Sort) : "-createdAt";
@@ -106,7 +115,7 @@ function List() {
         title="Payments"
         description={
           me.departmentScoped
-            ? `Only ${me.departments.join(", ") || "your departments"}. Newest first.`
+            ? `Only ${scope.departments.join(", ") || "your departments"}. Newest first.`
             : "Every payment from USSD and Dash Dots. Newest first."
         }
         actions={<ExportButton query={query} />}
@@ -127,6 +136,7 @@ function List() {
           onChange={(v) => set({ feeType: v })}
           options={(feeTypes.data ?? []).map((t) => ({ value: t.code, label: `${t.code} · ${t.name}` }))}
         />
+        <AcademicFilters me={me} faculty={values.faculty} department={values.department} onChange={set} />
         <DayRangeFilter optional presets={false} from={values.from} to={values.to} onChange={(r) => set(r)} />
       </FilterBar>
       <DataTable

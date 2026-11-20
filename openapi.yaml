@@ -49,6 +49,11 @@ tags:
     description: Financial accounts, commission transfers, bank payouts.
   - name: Admin · Reconciliation
   - name: Admin · Users & audit
+  - name: Admin · Faculties & departments
+    description: |
+      Faculties → departments. Department codes are what the portal sends for a payer and what fee rules,
+      minimum instalments and heads of department use, so codes never change; nothing is deleted (deactivate).
+      A department the portal sends that isn't listed is added with `needsReview: true` (payments never wait for it).
   - name: Monime
     description: Called by Monime (webhook, USSD flow exchange).
   - name: Public
@@ -401,7 +406,8 @@ paths:
                 name: { type: string, maxLength: 100 }
                 role: { $ref: '#/components/schemas/AdminRole' }
                 extraPermissions: { type: array, maxItems: 30, items: { $ref: '#/components/schemas/Permission' } }
-                departments: { type: array, maxItems: 30, items: { type: string, maxLength: 50 }, description: 'For HEAD_OF_DEPARTMENT.' }
+                departments: { type: array, maxItems: 30, items: { type: string, maxLength: 50 }, description: 'HEAD_OF_DEPARTMENT (required): active, reviewed Department codes. Ignored for other roles.' }
+                faculties: { type: array, maxItems: 30, items: { type: string, maxLength: 50 }, description: 'DEAN (required): active Faculty codes. Ignored for other roles.' }
       responses:
         '201': { description: Invited, content: { application/json: { schema: { $ref: '#/components/schemas/InvitedAdminUser' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -455,7 +461,8 @@ paths:
                 name: { type: string, maxLength: 100 }
                 role: { $ref: '#/components/schemas/AdminRole' }
                 extraPermissions: { type: array, maxItems: 30, items: { $ref: '#/components/schemas/Permission' } }
-                departments: { type: array, maxItems: 30, items: { type: string, maxLength: 50 } }
+                departments: { type: array, maxItems: 30, items: { type: string, maxLength: 50 }, description: Checked like on create. }
+                faculties: { type: array, maxItems: 30, items: { type: string, maxLength: 50 }, description: Checked like on create. }
                 active: { type: boolean }
       responses:
         '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/AdminUser' } } } }
@@ -482,6 +489,145 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  # ── Admin · faculties & departments ─────────────────────────────────────────
+  /v1/admin/faculties:
+    get:
+      operationId: adminListFaculties
+      tags: [Admin · Faculties & departments]
+      summary: Every faculty with its departments (for dropdowns)
+      description: Any signed-in admin. Includes inactive ones (filter on `active`). Departments needing review have no faculty, so they're only in `GET /v1/admin/departments`.
+      security: [{ adminJwt: [] }]
+      responses:
+        '200': { description: Faculties, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/FacultyWithDepartments' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: adminCreateFaculty
+      tags: [Admin · Faculties & departments]
+      summary: Add a faculty
+      x-permission: academics.manage
+      security: [{ adminJwt: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name]
+              properties:
+                code: { $ref: '#/components/schemas/AcademicCode' }
+                name: { type: string, maxLength: 120 }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Faculty' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/faculties/{code}:
+    patch:
+      operationId: adminUpdateFaculty
+      tags: [Admin · Faculties & departments]
+      summary: Rename or (de)activate a faculty
+      description: Deactivating is refused (409) while it has active departments or active deans.
+      x-permission: academics.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/FacultyCode' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 120 }
+                active: { type: boolean }
+      responses:
+        '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/Faculty' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/departments:
+    get:
+      operationId: adminListDepartments
+      tags: [Admin · Faculties & departments]
+      summary: Departments, with their faculty
+      description: Any signed-in admin. `needsReview=true` lists the ones the portal sent that an admin hasn't set up yet.
+      security: [{ adminJwt: [] }]
+      parameters:
+        - { name: faculty, in: query, schema: { type: string, maxLength: 40 }, description: Faculty code }
+        - { name: needsReview, in: query, schema: { type: boolean } }
+        - { name: active, in: query, schema: { type: boolean } }
+      responses:
+        '200': { description: Departments, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/DepartmentListItem' } } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: adminCreateDepartment
+      tags: [Admin · Faculties & departments]
+      summary: Add a department to an active faculty
+      x-permission: academics.manage
+      security: [{ adminJwt: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name, facultyCode]
+              properties:
+                code: { $ref: '#/components/schemas/AcademicCode' }
+                name: { type: string, maxLength: 120 }
+                facultyCode: { type: string, maxLength: 40 }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/DepartmentListItem' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/departments/{code}:
+    get:
+      operationId: adminGetDepartment
+      tags: [Admin · Faculties & departments]
+      summary: A department
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/DepartmentPathCode' }]
+      responses:
+        '200': { description: Department, content: { application/json: { schema: { $ref: '#/components/schemas/DepartmentListItem' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: adminUpdateDepartment
+      tags: [Admin · Faculties & departments]
+      summary: Rename, move to another faculty, or (de)activate
+      description: |
+        Giving a department that needs review a faculty marks it reviewed (it needs one: 400 otherwise).
+        Moving to an inactive faculty: 409. Deactivating is refused (409) while an active head of department
+        or a rule on a fee that isn't closed uses it.
+      x-permission: academics.manage
+      security: [{ adminJwt: [] }]
+      parameters: [{ $ref: '#/components/parameters/DepartmentPathCode' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 120 }
+                facultyCode: { type: string, maxLength: 40 }
+                active: { type: boolean }
+      responses:
+        '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/DepartmentListItem' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   # ── Admin · reports ─────────────────────────────────────────────────────────
   /v1/admin/reports/summary:
     get:
@@ -494,9 +640,12 @@ paths:
         - **byDay**: every day of the range, zero-filled. Days are UTC (= Africa/Freetown).
         - **payments**: the funnel of payments *started* in the range, by current status. An open
           payment past expiry counts as expired.
+        - **byFaculty** / **byDepartment**: collected, by the payer's department and that department's
+          *current* faculty (`facultyCode: null` = department without a faculty yet, or no department).
         - **commission** / **payouts**: transfers / payouts created in the range. They are `null` unless
-          the admin has `transfers.read` / `payouts.read`, and always `null` for heads of department.
-        - Heads of department only see their departments' payments (`filters.departments`).
+          the admin has `transfers.read` (super admins, or granted) / `payouts.read`, and always `null`
+          for heads of department and deans.
+        - Heads of department and deans only see their departments' payments (`filters.departments`).
       x-permission: reports.read
       security: [{ adminJwt: [] }]
       parameters:
@@ -504,6 +653,8 @@ paths:
         - { name: to, in: query, schema: { type: string, format: date }, description: 'Inclusive. Default: today. At most 366 days in all.' }
         - { name: feeType, in: query, schema: { type: string, maxLength: 20 }, example: TUITION }
         - { name: channel, in: query, schema: { $ref: '#/components/schemas/Channel' } }
+        - $ref: '#/components/parameters/DepartmentFilter'
+        - $ref: '#/components/parameters/FacultyFilter'
       responses:
         '200':
           description: Summary
@@ -524,7 +675,9 @@ paths:
                     properties:
                       feeType: { type: [string, 'null'] }
                       channel: { oneOf: [{ $ref: '#/components/schemas/Channel' }, { type: 'null' }] }
-                      departments: { type: [array, 'null'], items: { type: string } }
+                      department: { type: [string, 'null'] }
+                      faculty: { type: [string, 'null'] }
+                      departments: { type: [array, 'null'], items: { type: string }, description: 'Department scope of a head of department or dean.' }
                   collected:
                     type: object
                     properties:
@@ -549,6 +702,25 @@ paths:
                         count: { type: integer }
                         platformFees: { type: string, description: 'SLE minor units' }
                         net: { type: string, description: 'SLE minor units' }
+                  byFaculty:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        facultyCode: { type: [string, 'null'] }
+                        facultyName: { type: [string, 'null'] }
+                        amount: { type: string, description: 'SLE minor units' }
+                        count: { type: integer }
+                  byDepartment:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        department: { type: [string, 'null'], description: Department code the portal sent }
+                        departmentName: { type: [string, 'null'] }
+                        facultyCode: { type: [string, 'null'] }
+                        amount: { type: string, description: 'SLE minor units' }
+                        count: { type: integer }
                   byChannel:
                     type: array
                     items: { type: object, properties: { channel: { $ref: '#/components/schemas/Channel' }, amount: { type: string, description: 'SLE minor units' }, count: { type: integer } } }
@@ -583,7 +755,7 @@ paths:
       operationId: adminListPayments
       tags: [Admin · Payments]
       summary: List payments
-      description: Heads of department only see their departments' payments.
+      description: Heads of department and deans only see their departments' payments.
       x-permission: payments.read
       security: [{ adminJwt: [] }]
       parameters:
@@ -596,6 +768,8 @@ paths:
         - { name: ref, in: query, schema: { type: string, maxLength: 64 }, description: 'Our payment ref, Monime order number, or Monime payment id (spm-…).' }
         - { name: from, in: query, schema: { type: string, format: date-time } }
         - { name: to, in: query, schema: { type: string, format: date-time } }
+        - $ref: '#/components/parameters/DepartmentFilter'
+        - $ref: '#/components/parameters/FacultyFilter'
         - $ref: '#/components/parameters/Sort'
       responses:
         '200': { description: Page, content: { application/json: { schema: { $ref: '#/components/schemas/AdminPaymentPage' } } } }
@@ -609,12 +783,13 @@ paths:
       summary: Download payments as CSV
       description: |
         Same filters as the list; oldest first; amounts in SLE (`1500.00`). At most 50,000 rows
-        (narrow the filters beyond that: 400 `VALIDATION`). Heads of department get only their
+        (narrow the filters beyond that: 400 `VALIDATION`). Heads of department and deans get only their
         departments. Cells starting with `= + - @` are prefixed with `'` (no spreadsheet formulas).
         UTF-8 with BOM. Every export is audited (`payments.export`).
 
         Columns: created_at, completed_at, payment_ref, status, channel, collection_method, fee_type,
-        fee_name, payer_kind, payer_ref, payer_name, program, department, amount_sle, monime_fee_sle,
+        fee_name, payer_kind, payer_ref, payer_name, program, department, department_name, faculty,
+        faculty_name, amount_sle, monime_fee_sle,
         platform_fee_sle, net_sle, payer_phone, monime_order_number, monime_payment_id,
         receipt_number, failure_reason, payment_id.
       x-permission: payments.export
@@ -627,6 +802,8 @@ paths:
         - { name: ref, in: query, schema: { type: string, maxLength: 64 } }
         - { name: from, in: query, schema: { type: string, format: date-time } }
         - { name: to, in: query, schema: { type: string, format: date-time } }
+        - $ref: '#/components/parameters/DepartmentFilter'
+        - $ref: '#/components/parameters/FacultyFilter'
       responses:
         '200':
           description: CSV file (`Content-Disposition` attachment)
@@ -922,14 +1099,15 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
-  /v1/admin/fees/{id}/instalment-rules/{programCode}:
+  /v1/admin/fees/{id}/instalment-rules/{department}:
     put:
       operationId: adminSetInstalment
       tags: [Admin · Fee setup]
-      summary: Set the minimum instalment for a program
+      summary: Set the minimum instalment for a department
+      description: The department must exist, be active and reviewed (400 otherwise). Its payers (students and applicants) can't pay less per instalment.
       x-permission: instalments.manage
       security: [{ adminJwt: [] }]
-      parameters: [{ $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/ProgramCode' }]
+      parameters: [{ $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/DepartmentCode' }]
       requestBody:
         required: true
         content:
@@ -943,10 +1121,10 @@ paths:
     delete:
       operationId: adminDeleteInstalment
       tags: [Admin · Fee setup]
-      summary: Remove a program's minimum instalment (the fee default applies)
+      summary: Remove a department's minimum instalment (the fee default applies)
       x-permission: instalments.manage
       security: [{ adminJwt: [] }]
-      parameters: [{ $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/ProgramCode' }]
+      parameters: [{ $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/DepartmentCode' }]
       responses:
         '200': { description: Deleted, content: { application/json: { schema: { $ref: '#/components/schemas/Deleted' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1072,6 +1250,10 @@ paths:
       operationId: adminListTransfers
       tags: [Admin · Treasury]
       summary: Commission transfers (fee account → platform account)
+      description: |
+        Super admins only, unless `transfers.read` is granted on its own. Without it, payment details show
+        `commissionTransfer: null`, the reconciliation summary shows `null` for transfers, and
+        commission-transfer outbox messages are hidden.
       x-permission: transfers.read
       security: [{ adminJwt: [] }]
       parameters:
@@ -1374,7 +1556,11 @@ components:
     Id: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     RuleId: { name: ruleId, in: path, required: true, schema: { type: string, format: uuid } }
     EventId: { name: id, in: path, required: true, schema: { type: string }, description: 'Monime event id.' }
-    ProgramCode: { name: programCode, in: path, required: true, schema: { type: string }, example: BSC-CS, description: 'Case-insensitive.' }
+    DepartmentCode: { name: department, in: path, required: true, schema: { type: string, maxLength: 40 }, example: NURSING, description: 'Department code (exact, case-sensitive).' }
+    FacultyCode: { name: code, in: path, required: true, schema: { type: string, maxLength: 40 }, example: FAC-NURSING-AHS }
+    DepartmentPathCode: { name: code, in: path, required: true, schema: { type: string, maxLength: 40 }, example: NURSING }
+    DepartmentFilter: { name: department, in: query, schema: { type: string, maxLength: 40 }, example: NURSING, description: Department code. }
+    FacultyFilter: { name: faculty, in: query, schema: { type: string, maxLength: 40 }, example: FAC-NURSING-AHS, description: 'Faculty code: its departments as they are now.' }
     PayerKind: { name: kind, in: path, required: true, schema: { type: string, enum: [applicant, student] } }
     PayerRef: { name: ref, in: path, required: true, schema: { type: string }, examples: { student: { value: UNI-2025-0002 }, applicant: { value: APP-2026-0001 } } }
     UssdToken: { name: token, in: path, required: true, schema: { type: string }, description: 'Secret path token (USSD_EXCHANGE_PATH_TOKEN).' }
@@ -1420,7 +1606,7 @@ components:
     PaymentRef: { type: string, pattern: '^[1-9]\d{7}$', example: '15540719', description: '8-digit ref to give the payer for status checks.' }
     Permission:
       type: string
-      enum: [fees.read, fees.manage, instalments.manage, payers.read, payers.adjust, payments.read, payments.export, payments.refund, payments.reconcile, receipts.resend, accounts.read, accounts.manage, payouts.read, payouts.manage, transfers.read, transfers.retry, reconciliation.read, reconciliation.manage, outbox.read, outbox.retry, reports.read, audit.read, users.manage, settings.manage]
+      enum: [fees.read, fees.manage, instalments.manage, payers.read, payers.adjust, payments.read, payments.export, payments.refund, payments.reconcile, receipts.resend, accounts.read, accounts.manage, payouts.read, payouts.manage, transfers.read, transfers.retry, reconciliation.read, reconciliation.manage, outbox.read, outbox.retry, reports.read, audit.read, users.manage, settings.manage, academics.manage]
 
     CountAmount:
       type: object
@@ -1515,8 +1701,8 @@ components:
       type: object
       description: Omitted or null = matches any.
       properties:
-        programCode: { type: [string, 'null'], maxLength: 20, example: BSC-CS }
-        department: { type: [string, 'null'], maxLength: 50, example: COMPUTING }
+        programCode: { type: [string, 'null'], maxLength: 20, example: BSC-CS, description: 'As the portal sends it; not checked.' }
+        department: { type: [string, 'null'], maxLength: 50, example: COMPUTER-SCI, description: 'Must be an active, reviewed department (400 otherwise).' }
         level: { type: [integer, 'null'], minimum: 1, maximum: 10 }
         residency: { type: [string, 'null'], enum: [LOCAL, INTERNATIONAL, null] }
         intake: { type: [string, 'null'], pattern: '^[A-Za-z0-9-]{4,20}$', example: 2026-SEP }
@@ -1524,15 +1710,36 @@ components:
     # ── Admin response shapes built on the generated rows ──
     AdminPrincipal:
       type: object
-      required: [id, email, role, permissions, departments, departmentScoped, aal]
+      required: [id, email, role, permissions, departments, faculties, departmentScoped, aal]
       properties:
         id: { type: string, format: uuid }
         email: { type: string, format: email }
         role: { $ref: '#/components/schemas/AdminRole' }
         permissions: { type: array, items: { $ref: '#/components/schemas/Permission' } }
-        departments: { type: array, items: { type: string } }
-        departmentScoped: { type: boolean, description: 'true for HEAD_OF_DEPARTMENT: payments are limited to `departments`.' }
+        departments: { type: array, items: { type: string }, description: 'Department codes the admin is limited to. For a dean: every department of their faculties, as they are now.' }
+        faculties: { type: array, items: { type: string }, description: 'DEAN: their faculty codes. Empty otherwise.' }
+        departmentScoped: { type: boolean, description: 'true for HEAD_OF_DEPARTMENT and DEAN: payments and reports are limited to `departments`.' }
         aal: { type: string, enum: [aal1, aal2], description: Supabase authenticator assurance level }
+    AcademicCode:
+      type: string
+      pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$'
+      example: NURSING
+      description: Never changes. Department codes must match exactly what the portal sends.
+    FacultyWithDepartments:
+      allOf:
+        - $ref: '#/components/schemas/Faculty'
+        - type: object
+          required: [departments]
+          properties:
+            departments: { type: array, items: { $ref: '#/components/schemas/Department' } }
+    DepartmentListItem:
+      allOf:
+        - $ref: '#/components/schemas/Department'
+        - type: object
+          required: [facultyCode, facultyName]
+          properties:
+            facultyCode: { type: [string, 'null'] }
+            facultyName: { type: [string, 'null'] }
     InviteOutcome:
       type: object
       required: [status]
@@ -1563,13 +1770,16 @@ components:
             feeName: { type: string }
             payer:
               type: object
-              required: [kind, ref, fullName, programCode, department]
+              required: [kind, ref, fullName, programCode, department, departmentName, facultyCode, facultyName]
               properties:
                 kind: { $ref: '#/components/schemas/PayerKind' }
                 ref: { type: string }
                 fullName: { type: string }
                 programCode: { type: string }
-                department: { type: [string, 'null'] }
+                department: { type: [string, 'null'], description: Department code the portal sent }
+                departmentName: { type: [string, 'null'] }
+                facultyCode: { type: [string, 'null'], description: The department's current faculty }
+                facultyName: { type: [string, 'null'] }
             receiptNumber: { type: [string, 'null'] }
     AdminPaymentDetail:
       allOf:
@@ -1641,8 +1851,8 @@ components:
           properties:
             openItems: { type: integer, description: OPEN reconciliation items }
             webhookEvents: { type: integer, description: UNMATCHED or FAILED webhook events nobody resolved }
-            failedTransfers: { type: integer }
-            stuckTransfers: { type: integer, description: PENDING/SUBMITTED for over an hour }
+            failedTransfers: { type: [integer, 'null'], description: 'null without transfers.read' }
+            stuckTransfers: { type: [integer, 'null'], description: 'PENDING/SUBMITTED for over an hour; null without transfers.read' }
             stuckPayouts: { type: integer, description: REQUESTED/SUBMITTED/PROCESSING for over an hour }
             failedPayouts: { type: integer, description: FAILED in the last 7 days }
             deadOutbox: { type: integer }
@@ -1650,8 +1860,8 @@ components:
         listLimit: { type: integer, example: 100 }
         openItems: { type: array, items: { $ref: '#/components/schemas/ReconciliationItem' } }
         webhookEvents: { type: array, items: { $ref: '#/components/schemas/WebhookEventSummary' } }
-        failedTransfers: { type: array, items: { $ref: '#/components/schemas/Transfer' } }
-        stuckTransfers: { type: array, items: { $ref: '#/components/schemas/Transfer' } }
+        failedTransfers: { type: [array, 'null'], items: { $ref: '#/components/schemas/Transfer' }, description: 'null without transfers.read' }
+        stuckTransfers: { type: [array, 'null'], items: { $ref: '#/components/schemas/Transfer' }, description: 'null without transfers.read' }
         stuckPayouts: { type: array, items: { $ref: '#/components/schemas/Payout' } }
         failedPayouts: { type: array, items: { $ref: '#/components/schemas/Payout' } }
         deadOutbox: { type: array, items: { $ref: '#/components/schemas/OutboxMessage' } }
@@ -1790,7 +2000,7 @@ components:
     AdminUser:
       type: object
       description: "Invite-only: a Supabase Auth user can use the admin API only if an active AdminUser with their email exists. Bound to the Supabase user id on first login."
-      required: [ id, email, authUserId, name, role, extraPermissions, departments, active, lastLoginAt, createdBy, createdAt, updatedAt ]
+      required: [ id, email, authUserId, name, role, extraPermissions, departments, faculties, active, lastLoginAt, createdBy, createdAt, updatedAt ]
       properties:
         id: { type: string, format: uuid }
         email: { type: string }
@@ -1798,7 +2008,8 @@ components:
         name: { type: [ string, "null" ] }
         role: { $ref: "#/components/schemas/AdminRole" }
         extraPermissions: { type: array, items: { type: string }, description: granted on top of the role's bundle (e.g. instalments.manage) }
-        departments: { type: array, items: { type: string }, description: HEAD_OF_DEPARTMENT scope }
+        departments: { type: array, items: { type: string }, description: HEAD_OF_DEPARTMENT scope (Department.code) }
+        faculties: { type: array, items: { type: string }, description: "DEAN scope (Faculty.code): every department of these faculties" }
         active: { type: boolean }
         lastLoginAt: { type: [ string, "null" ], format: date-time }
         createdBy: { type: [ string, "null" ] }
@@ -1817,6 +2028,19 @@ components:
         before: { description: JSON }
         after: { description: JSON }
         at: { type: string, format: date-time }
+    Department:
+      type: object
+      description: A department. `code` is what the portal sends as the payer's department and what rules, heads of department and payer snapshots store (as text).
+      required: [ id, code, name, facultyId, active, needsReview, createdAt, updatedAt ]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        facultyId: { description: null only while it needs review, type: [ string, "null" ], format: uuid }
+        active: { type: boolean }
+        needsReview: { description: "Seen from the portal but not set up by an admin yet (name = code, no faculty)", type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
     EligibilityRule:
       type: object
       required: [ id, feeId, programCode, department, level, residency, intake, finalYear ]
@@ -1829,6 +2053,17 @@ components:
         residency: { oneOf: [ { $ref: "#/components/schemas/Residency" }, { type: "null" } ] }
         intake: { type: [ string, "null" ] }
         finalYear: { type: [ boolean, "null" ] }
+    Faculty:
+      type: object
+      description: A faculty (or a grouping such as Postgraduate Studies). Codes never change.
+      required: [ id, code, name, active, createdAt, updatedAt ]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        active: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
     Fee:
       type: object
       required: [ id, feeTypeId, name, period, allowInstalments, defaultMinInstalment, dueDate, status, createdAt ]
@@ -1869,11 +2104,12 @@ components:
         createdAt: { type: string, format: date-time }
     InstalmentRule:
       type: object
-      required: [ id, feeId, programCode, minInstalment, updatedBy, updatedAt ]
+      description: Minimum instalment for one department's payers (overrides Fee.defaultMinInstalment).
+      required: [ id, feeId, department, minInstalment, updatedBy, updatedAt ]
       properties:
         id: { type: string, format: uuid }
         feeId: { type: string, format: uuid }
-        programCode: { type: string }
+        department: { description: Department.code, type: string }
         minInstalment: { type: string, pattern: ^-?\d+$, description: SLE minor units }
         updatedBy: { type: string }
         updatedAt: { type: string, format: date-time }
@@ -2054,7 +2290,7 @@ components:
         resolution: *a10
     AdminRole:
       type: string
-      enum: [ SUPER_ADMIN, BURSAR, FINANCE_OFFICER, HEAD_OF_DEPARTMENT, AUDITOR ]
+      enum: [ SUPER_ADMIN, BURSAR, FINANCE_OFFICER, HEAD_OF_DEPARTMENT, DEAN, AUDITOR ]
     Channel:
       type: string
       enum: [ USSD, DOTS ]

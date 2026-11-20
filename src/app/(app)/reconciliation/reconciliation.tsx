@@ -94,12 +94,17 @@ function Attention({ s }: { s: Summary }) {
       <Section id="webhookEvents" title="Unmatched or failed webhook events" count={s.counts.webhookEvents} limit={L}>
         <DataTable {...small} columns={eventColumns} rows={s.webhookEvents} getRowId={(e) => e.id} rowHref={(e) => `/reconciliation/events/${encodeURIComponent(e.id)}`} emptyTitle="None" />
       </Section>
-      <Section id="failedTransfers" title="Failed commission transfers" count={s.counts.failedTransfers} limit={L}>
-        <DataTable {...small} columns={transferColumns} rows={s.failedTransfers} getRowId={(t) => t.id} rowHref={(t) => `/treasury/transfers/${t.id}`} emptyTitle="None" />
-      </Section>
-      <Section id="stuckTransfers" title="Stuck transfers (pending over an hour)" count={s.counts.stuckTransfers} limit={L}>
-        <DataTable {...small} columns={transferColumns} rows={s.stuckTransfers} getRowId={(t) => t.id} rowHref={(t) => `/treasury/transfers/${t.id}`} emptyTitle="None" />
-      </Section>
+      {/* null without transfers.read (commission transfers are super-admin only): hide the sections */}
+      {s.failedTransfers !== null && s.counts.failedTransfers !== null && (
+        <Section id="failedTransfers" title="Failed commission transfers" count={s.counts.failedTransfers} limit={L}>
+          <DataTable {...small} columns={transferColumns} rows={s.failedTransfers} getRowId={(t) => t.id} rowHref={(t) => `/treasury/transfers/${t.id}`} emptyTitle="None" />
+        </Section>
+      )}
+      {s.stuckTransfers !== null && s.counts.stuckTransfers !== null && (
+        <Section id="stuckTransfers" title="Stuck transfers (pending over an hour)" count={s.counts.stuckTransfers} limit={L}>
+          <DataTable {...small} columns={transferColumns} rows={s.stuckTransfers} getRowId={(t) => t.id} rowHref={(t) => `/treasury/transfers/${t.id}`} emptyTitle="None" />
+        </Section>
+      )}
       <Section id="stuckPayouts" title="Stuck payouts (in flight over an hour)" count={s.counts.stuckPayouts} limit={L}>
         <DataTable {...small} columns={payoutColumns} rows={s.stuckPayouts} getRowId={(p) => p.id} rowHref={(p) => `/treasury/payouts/${p.id}`} emptyTitle="None" />
       </Section>
@@ -217,7 +222,7 @@ function Page() {
   const tab = (TABS as readonly string[]).includes(values.tab) ? values.tab : "attention";
   const q = useQuery({ queryKey: qk.reconciliation, queryFn: () => call(api.GET("/v1/admin/reconciliation")), refetchInterval: 60_000 });
   const c = q.data?.counts;
-  const attention = c ? Object.values(c).reduce((a, b) => a + b, 0) : 0;
+  const attention = c ? Object.values(c).reduce<number>((a, b) => a + (b ?? 0), 0) : 0;
   return (
     <>
       <PageHeader title="Reconciliation" description="Nightly comparison with Monime, and everything that needs a person." actions={<StartRun />} />

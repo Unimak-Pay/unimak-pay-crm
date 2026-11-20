@@ -373,6 +373,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/faculties": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every faculty with its departments (for dropdowns)
+         * @description Any signed-in admin. Includes inactive ones (filter on `active`). Departments needing review have no faculty, so they're only in `GET /v1/admin/departments`.
+         */
+        get: operations["adminListFaculties"];
+        put?: never;
+        /** Add a faculty */
+        post: operations["adminCreateFaculty"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/faculties/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Rename or (de)activate a faculty
+         * @description Deactivating is refused (409) while it has active departments or active deans.
+         */
+        patch: operations["adminUpdateFaculty"];
+        trace?: never;
+    };
+    "/v1/admin/departments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Departments, with their faculty
+         * @description Any signed-in admin. `needsReview=true` lists the ones the portal sent that an admin hasn't set up yet.
+         */
+        get: operations["adminListDepartments"];
+        put?: never;
+        /** Add a department to an active faculty */
+        post: operations["adminCreateDepartment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/departments/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A department */
+        get: operations["adminGetDepartment"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Rename, move to another faculty, or (de)activate
+         * @description Giving a department that needs review a faculty marks it reviewed (it needs one: 400 otherwise).
+         *     Moving to an inactive faculty: 409. Deactivating is refused (409) while an active head of department
+         *     or a rule on a fee that isn't closed uses it.
+         */
+        patch: operations["adminUpdateDepartment"];
+        trace?: never;
+    };
     "/v1/admin/reports/summary": {
         parameters: {
             query?: never;
@@ -387,9 +472,12 @@ export interface paths {
          *     - **byDay**: every day of the range, zero-filled. Days are UTC (= Africa/Freetown).
          *     - **payments**: the funnel of payments *started* in the range, by current status. An open
          *       payment past expiry counts as expired.
+         *     - **byFaculty** / **byDepartment**: collected, by the payer's department and that department's
+         *       *current* faculty (`facultyCode: null` = department without a faculty yet, or no department).
          *     - **commission** / **payouts**: transfers / payouts created in the range. They are `null` unless
-         *       the admin has `transfers.read` / `payouts.read`, and always `null` for heads of department.
-         *     - Heads of department only see their departments' payments (`filters.departments`).
+         *       the admin has `transfers.read` (super admins, or granted) / `payouts.read`, and always `null`
+         *       for heads of department and deans.
+         *     - Heads of department and deans only see their departments' payments (`filters.departments`).
          */
         get: operations["adminReportsSummary"];
         put?: never;
@@ -409,7 +497,7 @@ export interface paths {
         };
         /**
          * List payments
-         * @description Heads of department only see their departments' payments.
+         * @description Heads of department and deans only see their departments' payments.
          */
         get: operations["adminListPayments"];
         put?: never;
@@ -430,12 +518,13 @@ export interface paths {
         /**
          * Download payments as CSV
          * @description Same filters as the list; oldest first; amounts in SLE (`1500.00`). At most 50,000 rows
-         *     (narrow the filters beyond that: 400 `VALIDATION`). Heads of department get only their
+         *     (narrow the filters beyond that: 400 `VALIDATION`). Heads of department and deans get only their
          *     departments. Cells starting with `= + - @` are prefixed with `'` (no spreadsheet formulas).
          *     UTF-8 with BOM. Every export is audited (`payments.export`).
          *
          *     Columns: created_at, completed_at, payment_ref, status, channel, collection_method, fee_type,
-         *     fee_name, payer_kind, payer_ref, payer_name, program, department, amount_sle, monime_fee_sle,
+         *     fee_name, payer_kind, payer_ref, payer_name, program, department, department_name, faculty,
+         *     faculty_name, amount_sle, monime_fee_sle,
          *     platform_fee_sle, net_sle, payer_phone, monime_order_number, monime_payment_id,
          *     receipt_number, failure_reason, payment_id.
          */
@@ -674,7 +763,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/admin/fees/{id}/instalment-rules/{programCode}": {
+    "/v1/admin/fees/{id}/instalment-rules/{department}": {
         parameters: {
             query?: never;
             header?: never;
@@ -682,10 +771,13 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Set the minimum instalment for a program */
+        /**
+         * Set the minimum instalment for a department
+         * @description The department must exist, be active and reviewed (400 otherwise). Its payers (students and applicants) can't pay less per instalment.
+         */
         put: operations["adminSetInstalment"];
         post?: never;
-        /** Remove a program's minimum instalment (the fee default applies) */
+        /** Remove a department's minimum instalment (the fee default applies) */
         delete: operations["adminDeleteInstalment"];
         options?: never;
         head?: never;
@@ -805,7 +897,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Commission transfers (fee account → platform account) */
+        /**
+         * Commission transfers (fee account → platform account)
+         * @description Super admins only, unless `transfers.read` is granted on its own. Without it, payment details show
+         *     `commissionTransfer: null`, the reconciliation summary shows `null` for transfers, and
+         *     commission-transfer outbox messages are hidden.
+         */
         get: operations["adminListTransfers"];
         put?: never;
         post?: never;
@@ -1098,7 +1195,7 @@ export interface components {
          */
         PaymentRef: string;
         /** @enum {string} */
-        Permission: "fees.read" | "fees.manage" | "instalments.manage" | "payers.read" | "payers.adjust" | "payments.read" | "payments.export" | "payments.refund" | "payments.reconcile" | "receipts.resend" | "accounts.read" | "accounts.manage" | "payouts.read" | "payouts.manage" | "transfers.read" | "transfers.retry" | "reconciliation.read" | "reconciliation.manage" | "outbox.read" | "outbox.retry" | "reports.read" | "audit.read" | "users.manage" | "settings.manage";
+        Permission: "fees.read" | "fees.manage" | "instalments.manage" | "payers.read" | "payers.adjust" | "payments.read" | "payments.export" | "payments.refund" | "payments.reconcile" | "receipts.resend" | "accounts.read" | "accounts.manage" | "payouts.read" | "payouts.manage" | "transfers.read" | "transfers.retry" | "reconciliation.read" | "reconciliation.manage" | "outbox.read" | "outbox.retry" | "reports.read" | "audit.read" | "users.manage" | "settings.manage" | "academics.manage";
         CountAmount: {
             count?: number;
             /** @description SLE minor units */
@@ -1207,9 +1304,15 @@ export interface components {
         };
         /** @description Omitted or null = matches any. */
         Matchers: {
-            /** @example BSC-CS */
+            /**
+             * @description As the portal sends it; not checked.
+             * @example BSC-CS
+             */
             programCode?: string | null;
-            /** @example COMPUTING */
+            /**
+             * @description Must be an active, reviewed department (400 otherwise).
+             * @example COMPUTER-SCI
+             */
             department?: string | null;
             level?: number | null;
             /** @enum {string|null} */
@@ -1224,14 +1327,29 @@ export interface components {
             email: string;
             role: components["schemas"]["AdminRole"];
             permissions: components["schemas"]["Permission"][];
+            /** @description Department codes the admin is limited to. For a dean: every department of their faculties, as they are now. */
             departments: string[];
-            /** @description true for HEAD_OF_DEPARTMENT: payments are limited to `departments`. */
+            /** @description DEAN: their faculty codes. Empty otherwise. */
+            faculties: string[];
+            /** @description true for HEAD_OF_DEPARTMENT and DEAN: payments and reports are limited to `departments`. */
             departmentScoped: boolean;
             /**
              * @description Supabase authenticator assurance level
              * @enum {string}
              */
             aal: "aal1" | "aal2";
+        };
+        /**
+         * @description Never changes. Department codes must match exactly what the portal sends.
+         * @example NURSING
+         */
+        AcademicCode: string;
+        FacultyWithDepartments: components["schemas"]["Faculty"] & {
+            departments: components["schemas"]["Department"][];
+        };
+        DepartmentListItem: components["schemas"]["Department"] & {
+            facultyCode: string | null;
+            facultyName: string | null;
         };
         InviteOutcome: {
             /**
@@ -1256,7 +1374,12 @@ export interface components {
                 ref: string;
                 fullName: string;
                 programCode: string;
+                /** @description Department code the portal sent */
                 department: string | null;
+                departmentName: string | null;
+                /** @description The department's current faculty */
+                facultyCode: string | null;
+                facultyName: string | null;
             };
             receiptNumber: string | null;
         };
@@ -1308,9 +1431,10 @@ export interface components {
                 openItems: number;
                 /** @description UNMATCHED or FAILED webhook events nobody resolved */
                 webhookEvents: number;
-                failedTransfers: number;
-                /** @description PENDING/SUBMITTED for over an hour */
-                stuckTransfers: number;
+                /** @description null without transfers.read */
+                failedTransfers: number | null;
+                /** @description PENDING/SUBMITTED for over an hour; null without transfers.read */
+                stuckTransfers: number | null;
                 /** @description REQUESTED/SUBMITTED/PROCESSING for over an hour */
                 stuckPayouts: number;
                 /** @description FAILED in the last 7 days */
@@ -1323,8 +1447,10 @@ export interface components {
             listLimit: number;
             openItems: components["schemas"]["ReconciliationItem"][];
             webhookEvents: components["schemas"]["WebhookEventSummary"][];
-            failedTransfers: components["schemas"]["Transfer"][];
-            stuckTransfers: components["schemas"]["Transfer"][];
+            /** @description null without transfers.read */
+            failedTransfers: components["schemas"]["Transfer"][] | null;
+            /** @description null without transfers.read */
+            stuckTransfers: components["schemas"]["Transfer"][] | null;
             stuckPayouts: components["schemas"]["Payout"][];
             failedPayouts: components["schemas"]["Payout"][];
             deadOutbox: components["schemas"]["OutboxMessage"][];
@@ -1457,8 +1583,10 @@ export interface components {
             role: components["schemas"]["AdminRole"];
             /** @description granted on top of the role's bundle (e.g. instalments.manage) */
             extraPermissions: string[];
-            /** @description HEAD_OF_DEPARTMENT scope */
+            /** @description HEAD_OF_DEPARTMENT scope (Department.code) */
             departments: string[];
+            /** @description DEAN scope (Faculty.code): every department of these faculties */
+            faculties: string[];
             active: boolean;
             /** Format: date-time */
             lastLoginAt: string | null;
@@ -1484,6 +1612,25 @@ export interface components {
             /** Format: date-time */
             at: string;
         };
+        /** @description A department. `code` is what the portal sends as the payer's department and what rules, heads of department and payer snapshots store (as text). */
+        Department: {
+            /** Format: uuid */
+            id: string;
+            code: string;
+            name: string;
+            /**
+             * Format: uuid
+             * @description null only while it needs review
+             */
+            facultyId: string | null;
+            active: boolean;
+            /** @description Seen from the portal but not set up by an admin yet (name = code, no faculty) */
+            needsReview: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
         EligibilityRule: {
             /** Format: uuid */
             id: string;
@@ -1495,6 +1642,18 @@ export interface components {
             residency: components["schemas"]["Residency"] | null;
             intake: string | null;
             finalYear: boolean | null;
+        };
+        /** @description A faculty (or a grouping such as Postgraduate Studies). Codes never change. */
+        Faculty: {
+            /** Format: uuid */
+            id: string;
+            code: string;
+            name: string;
+            active: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
         };
         Fee: {
             /** Format: uuid */
@@ -1547,12 +1706,14 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
         };
+        /** @description Minimum instalment for one department's payers (overrides Fee.defaultMinInstalment). */
         InstalmentRule: {
             /** Format: uuid */
             id: string;
             /** Format: uuid */
             feeId: string;
-            programCode: string;
+            /** @description Department.code */
+            department: string;
             /** @description SLE minor units */
             minInstalment: string;
             updatedBy: string;
@@ -1799,7 +1960,7 @@ export interface components {
             resolution: string | null;
         };
         /** @enum {string} */
-        AdminRole: "SUPER_ADMIN" | "BURSAR" | "FINANCE_OFFICER" | "HEAD_OF_DEPARTMENT" | "AUDITOR";
+        AdminRole: "SUPER_ADMIN" | "BURSAR" | "FINANCE_OFFICER" | "HEAD_OF_DEPARTMENT" | "DEAN" | "AUDITOR";
         /** @enum {string} */
         Channel: "USSD" | "DOTS";
         /** @enum {string} */
@@ -1913,10 +2074,24 @@ export interface components {
         /** @description Monime event id. */
         EventId: string;
         /**
-         * @description Case-insensitive.
-         * @example BSC-CS
+         * @description Department code (exact, case-sensitive).
+         * @example NURSING
          */
-        ProgramCode: string;
+        DepartmentCode: string;
+        /** @example FAC-NURSING-AHS */
+        FacultyCode: string;
+        /** @example NURSING */
+        DepartmentPathCode: string;
+        /**
+         * @description Department code.
+         * @example NURSING
+         */
+        DepartmentFilter: string;
+        /**
+         * @description Faculty code: its departments as they are now.
+         * @example FAC-NURSING-AHS
+         */
+        FacultyFilter: string;
         PayerKind: "applicant" | "student";
         PayerRef: string;
         /** @description Secret path token (USSD_EXCHANGE_PATH_TOKEN). */
@@ -2490,8 +2665,10 @@ export interface operations {
                     name?: string;
                     role: components["schemas"]["AdminRole"];
                     extraPermissions?: components["schemas"]["Permission"][];
-                    /** @description For HEAD_OF_DEPARTMENT. */
+                    /** @description HEAD_OF_DEPARTMENT (required): active, reviewed Department codes. Ignored for other roles. */
                     departments?: string[];
+                    /** @description DEAN (required): active Faculty codes. Ignored for other roles. */
+                    faculties?: string[];
                 };
             };
         };
@@ -2576,7 +2753,10 @@ export interface operations {
                     name?: string;
                     role?: components["schemas"]["AdminRole"];
                     extraPermissions?: components["schemas"]["Permission"][];
+                    /** @description Checked like on create. */
                     departments?: string[];
+                    /** @description Checked like on create. */
+                    faculties?: string[];
                     active?: boolean;
                 };
             };
@@ -2627,6 +2807,213 @@ export interface operations {
             403: components["responses"]["Forbidden"];
         };
     };
+    adminListFaculties: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Faculties */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FacultyWithDepartments"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    adminCreateFaculty: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    code: components["schemas"]["AcademicCode"];
+                    name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Faculty"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    adminUpdateFaculty: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example FAC-NURSING-AHS */
+                code: components["parameters"]["FacultyCode"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name?: string;
+                    active?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Faculty"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    adminListDepartments: {
+        parameters: {
+            query?: {
+                /** @description Faculty code */
+                faculty?: string;
+                needsReview?: boolean;
+                active?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Departments */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DepartmentListItem"][];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    adminCreateDepartment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    code: components["schemas"]["AcademicCode"];
+                    name: string;
+                    facultyCode: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DepartmentListItem"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    adminGetDepartment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example NURSING */
+                code: components["parameters"]["DepartmentPathCode"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Department */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DepartmentListItem"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    adminUpdateDepartment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example NURSING */
+                code: components["parameters"]["DepartmentPathCode"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name?: string;
+                    facultyCode?: string;
+                    active?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DepartmentListItem"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
     adminReportsSummary: {
         parameters: {
             query?: {
@@ -2637,6 +3024,16 @@ export interface operations {
                 /** @example TUITION */
                 feeType?: string;
                 channel?: components["schemas"]["Channel"];
+                /**
+                 * @description Department code.
+                 * @example NURSING
+                 */
+                department?: components["parameters"]["DepartmentFilter"];
+                /**
+                 * @description Faculty code: its departments as they are now.
+                 * @example FAC-NURSING-AHS
+                 */
+                faculty?: components["parameters"]["FacultyFilter"];
             };
             header?: never;
             path?: never;
@@ -2663,6 +3060,9 @@ export interface operations {
                         filters?: {
                             feeType?: string | null;
                             channel?: components["schemas"]["Channel"] | null;
+                            department?: string | null;
+                            faculty?: string | null;
+                            /** @description Department scope of a head of department or dean. */
                             departments?: string[] | null;
                         };
                         collected?: {
@@ -2697,6 +3097,22 @@ export interface operations {
                             platformFees?: string;
                             /** @description SLE minor units */
                             net?: string;
+                        }[];
+                        byFaculty?: {
+                            facultyCode?: string | null;
+                            facultyName?: string | null;
+                            /** @description SLE minor units */
+                            amount?: string;
+                            count?: number;
+                        }[];
+                        byDepartment?: {
+                            /** @description Department code the portal sent */
+                            department?: string | null;
+                            departmentName?: string | null;
+                            facultyCode?: string | null;
+                            /** @description SLE minor units */
+                            amount?: string;
+                            count?: number;
                         }[];
                         byChannel?: {
                             channel?: components["schemas"]["Channel"];
@@ -2746,6 +3162,16 @@ export interface operations {
                 ref?: string;
                 from?: string;
                 to?: string;
+                /**
+                 * @description Department code.
+                 * @example NURSING
+                 */
+                department?: components["parameters"]["DepartmentFilter"];
+                /**
+                 * @description Faculty code: its departments as they are now.
+                 * @example FAC-NURSING-AHS
+                 */
+                faculty?: components["parameters"]["FacultyFilter"];
                 /** @description `-` = descending. Ties break on id, so cursor paging stays stable. */
                 sort?: components["parameters"]["Sort"];
             };
@@ -2778,6 +3204,16 @@ export interface operations {
                 ref?: string;
                 from?: string;
                 to?: string;
+                /**
+                 * @description Department code.
+                 * @example NURSING
+                 */
+                department?: components["parameters"]["DepartmentFilter"];
+                /**
+                 * @description Faculty code: its departments as they are now.
+                 * @example FAC-NURSING-AHS
+                 */
+                faculty?: components["parameters"]["FacultyFilter"];
             };
             header?: never;
             path?: never;
@@ -3268,10 +3704,10 @@ export interface operations {
             path: {
                 id: components["parameters"]["Id"];
                 /**
-                 * @description Case-insensitive.
-                 * @example BSC-CS
+                 * @description Department code (exact, case-sensitive).
+                 * @example NURSING
                  */
-                programCode: components["parameters"]["ProgramCode"];
+                department: components["parameters"]["DepartmentCode"];
             };
             cookie?: never;
         };
@@ -3304,10 +3740,10 @@ export interface operations {
             path: {
                 id: components["parameters"]["Id"];
                 /**
-                 * @description Case-insensitive.
-                 * @example BSC-CS
+                 * @description Department code (exact, case-sensitive).
+                 * @example NURSING
                  */
-                programCode: components["parameters"]["ProgramCode"];
+                department: components["parameters"]["DepartmentCode"];
             };
             cookie?: never;
         };
@@ -3992,14 +4428,14 @@ export const pathsV1AdminFeeTypesPostRequestBodyContentApplicationJsonPayerKindV
 export const pathsV1AdminFeeTypesPostRequestBodyContentApplicationJsonRecurrenceValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/fee-types"]["post"]["requestBody"]["content"]["application/json"]["recurrence"]> = ["ONCE", "PER_YEAR"];
 export const pathsV1AdminFeesIdPreviewGetParametersQueryKindValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/fees/{id}/preview"]["get"]["parameters"]["query"]["kind"]> = ["applicant", "student"];
 export const pathsDevMonimeSimulateWebhookPostRequestBodyContentApplicationJsonOutcomeValues: ReadonlyArray<FlattenedDeepRequired<paths>["/dev/monime/simulate-webhook"]["post"]["requestBody"]["content"]["application/json"]["outcome"]> = ["completed", "failed", "expired"];
-export const permissionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Permission"]> = ["fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export", "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "accounts.manage", "payouts.read", "payouts.manage", "transfers.read", "transfers.retry", "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage"];
+export const permissionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Permission"]> = ["fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export", "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "accounts.manage", "payouts.read", "payouts.manage", "transfers.read", "transfers.retry", "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage", "academics.manage"];
 export const payer_payerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Payer"]["kind"]> = ["applicant", "student"];
 export const obligationStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Obligation"]["status"]> = ["OPEN", "PAID"];
 export const paymentStatusViewPayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PaymentStatusView"]["payer"]["kind"]> = ["applicant", "student"];
 export const adminPrincipalAalValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AdminPrincipal"]["aal"]> = ["aal1", "aal2"];
 export const inviteOutcomeStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["InviteOutcome"]["status"]> = ["SENT", "ALREADY_REGISTERED", "NOT_CONFIGURED", "FAILED"];
 export const webhookAckResultValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["WebhookAck"]["result"]> = ["PROCESSED", "IGNORED", "UNMATCHED", "DUPLICATE"];
-export const adminRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AdminRole"]> = ["SUPER_ADMIN", "BURSAR", "FINANCE_OFFICER", "HEAD_OF_DEPARTMENT", "AUDITOR"];
+export const adminRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AdminRole"]> = ["SUPER_ADMIN", "BURSAR", "FINANCE_OFFICER", "HEAD_OF_DEPARTMENT", "DEAN", "AUDITOR"];
 export const channelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Channel"]> = ["USSD", "DOTS"];
 export const collectionMethodValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CollectionMethod"]> = ["PAYMENT_CODE", "USSD_FLOW"];
 export const feeStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FeeStatus"]> = ["DRAFT", "ACTIVE", "CLOSED"];

@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ShieldCheck, ShieldOff } from "lucide-react";
 import { useMe } from "@/auth/auth-provider";
+import { useScopeNames } from "@/components/academics";
 import { CopyValue, DateTime } from "@/components/format";
 import { ErrorState, Field, Fields, LoadingBlock, PageHeader } from "@/components/states";
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +46,7 @@ function Authenticators() {
 
 export function Profile() {
   const me = useMe();
+  const scope = useScopeNames(me.departments, me.faculties);
   return (
     <div className="max-w-4xl space-y-4">
       <PageHeader title="Profile" description="Your admin account, as the backend sees it." />
@@ -62,9 +64,14 @@ export function Profile() {
             <Field label="Admin id">
               <CopyValue value={me.id} />
             </Field>
+            {me.faculties.length > 0 && (
+              <Field label="Faculties" className="sm:col-span-2">
+                {scope.faculties.join(", ")}
+              </Field>
+            )}
             {me.departmentScoped && (
               <Field label="Departments" className="sm:col-span-2">
-                {me.departments.length ? me.departments.join(", ") : "None assigned: you will not see any payments."}
+                {me.departments.length ? scope.departments.join(", ") : "None assigned: you will not see any payments."}
               </Field>
             )}
           </Fields>

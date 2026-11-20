@@ -8,6 +8,8 @@ import { api, call } from "@/api/client";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
 import { channelValues } from "@/api/schema.gen";
+import { useMe } from "@/auth/auth-provider";
+import { AcademicFilters, departmentLabel, useAcademics } from "@/components/academics";
 import { DayRangeFilter, FilterBar, FilterSelect } from "@/components/filters";
 import { Money } from "@/components/format";
 import { useCanOp } from "@/components/permission";
@@ -32,7 +34,7 @@ function normalize(s: RawSummary, f: { from: string; to: string }) {
   const ca = (x?: CountAmount) => ({ count: x?.count ?? 0, amount: x?.amount ?? "0" });
   return {
     range: { from: s.range?.from ?? f.from, to: s.range?.to ?? f.to, days: s.range?.days ?? 0, timezone: s.range?.timezone ?? "Africa/Freetown (UTC)" },
-    filters: { departments: s.filters?.departments ?? null },
+    filters: { departments: s.filters?.departments ?? null, faculty: s.filters?.faculty ?? null, department: s.filters?.department ?? null },
     collected: {
       amount: s.collected?.amount ?? "0",
       count: s.collected?.count ?? 0,
@@ -44,6 +46,14 @@ function normalize(s: RawSummary, f: { from: string; to: string }) {
     },
     byDay: (s.byDay ?? []).map((d) => ({ date: d.date ?? "", amount: d.amount ?? "0", count: d.count ?? 0 })),
     byFeeType: (s.byFeeType ?? []).map((r) => ({ feeTypeCode: r.feeTypeCode ?? "?", feeTypeName: r.feeTypeName ?? "", amount: r.amount ?? "0", count: r.count ?? 0 })),
+    byFaculty: (s.byFaculty ?? []).map((r) => ({ facultyCode: r.facultyCode ?? null, facultyName: r.facultyName ?? null, amount: r.amount ?? "0", count: r.count ?? 0 })),
+    byDepartment: (s.byDepartment ?? []).map((r) => ({
+      department: r.department ?? null,
+      departmentName: r.departmentName ?? null,
+      facultyCode: r.facultyCode ?? null,
+      amount: r.amount ?? "0",
+      count: r.count ?? 0,
+    })),
     byChannel: (s.byChannel ?? []).map((r) => ({ channel: r.channel ?? "USSD", amount: r.amount ?? "0", count: r.count ?? 0 })),
     payments: {
       started: s.payments?.started ?? 0,
@@ -59,9 +69,9 @@ function normalize(s: RawSummary, f: { from: string; to: string }) {
 }
 type Summary = ReturnType<typeof normalize>;
 
-const KEYS = ["from", "to", "feeType", "channel"] as const;
+const KEYS = ["from", "to", "feeType", "channel", "faculty", "department"] as const;
 
-function fetchSummary(f: { from: string; to: string; feeType?: string; channel?: string }) {
+function fetchSummary(f: { from: string; to: string; feeType?: string; channel?: string; faculty?: string; department?: string }) {
   return call(
     api.GET("/v1/admin/reports/summary", {
       params: { query: { ...f, channel: f.channel as components["schemas"]["Channel"] | undefined } },
@@ -79,8 +89,10 @@ function Kpi({ label, children, hint }: { label: string; children: React.ReactNo
   );
 }
 
+type ShareRow = { key: string; label: string; amount: string; count: number; onSelect?: () => void; selected?: boolean; hint?: string };
+
 /** Horizontal share bars with direct labels (one hue: magnitude, not identity). */
-function ShareBars({ rows }: { rows: { key: string; label: string; amount: string; count: number }[] }) {
+function ShareBars({ rows }: { rows: ShareRow[] }) {
   const max = rows.reduce((m, r) => (compareMinor(r.amount, m) > 0 ? r.amount : m), "0");
   if (!rows.length) return <p className="py-4 text-sm text-muted-foreground">No completed payments in this range.</p>;
   return (
@@ -90,7 +102,21 @@ function ShareBars({ rows }: { rows: { key: string; label: string; amount: strin
         return (
           <li key={r.key} className="text-sm">
             <div className="flex items-baseline justify-between gap-3">
-              <span className="truncate">{r.label}</span>
+              {r.onSelect ? (
+                <button
+                  type="button"
+                  onClick={r.onSelect}
+                  aria-pressed={r.selected}
+                  title={r.hint}
+                  className={cn("truncate text-left underline-offset-2 hover:underline", r.selected && "font-semibold")}
+                >
+                  {r.label}
+                </button>
+              ) : (
+                <span className="truncate" title={r.hint}>
+                  {r.label}
+                </span>
+              )}
               <span className="shrink-0 tabular-nums">
                 <Money minor={r.amount} /> <span className="text-xs text-muted-foreground">· {r.count}</span>
               </span>
@@ -218,6 +244,8 @@ export function Collections() {
   const { values, set, reset, active } = useUrlFilters(KEYS);
   const f = { ...defaults, ...compact(values) };
   const canOp = useCanOp();
+  const me = useMe();
+  const { departments: deptNames, faculties: facultyIndex } = useAcademics();
 
   const q = useQuery({ queryKey: qk.reports(f), queryFn: async () => normalize(await fetchSummary(f), f), placeholderData: (prev) => prev });
   const feeTypes = useQuery({
@@ -239,7 +267,7 @@ export function Collections() {
         {s && (
           <span className="text-xs text-muted-foreground">
             {formatDay(s.range.from)} – {formatDay(s.range.to)} · {s.range.days} days · {s.range.timezone}
-            {s.filters.departments && ` · departments: ${s.filters.departments.join(", ")}`}
+            {s.filters.departments && ` · departments: ${s.filters.departments.map((c) => departmentLabel(c, deptNames)).join(", ")}`}
           </span>
         )}
       </div>
@@ -247,6 +275,7 @@ export function Collections() {
         <DayRangeFilter from={f.from} to={f.to} maxDays={366} onChange={(r) => set(r)} />
         <FilterSelect label="Fee type" value={values.feeType} onChange={(v) => set({ feeType: v })} options={feeTypeOptions} />
         <FilterSelect label="Channel" value={values.channel} onChange={(v) => set({ channel: v })} options={channelValues} />
+        <AcademicFilters me={me} faculty={values.faculty} department={values.department} onChange={set} />
       </FilterBar>
 
       {q.isPending ? (
@@ -315,6 +344,51 @@ export function Collections() {
                   <FunnelRow label="Failed" count={s.payments.failed.count} amount={s.payments.failed.amount} started={s.payments.started} tone="bg-red-600" />
                   <FunnelRow label="Expired" count={s.payments.expired.count} amount={s.payments.expired.amount} started={s.payments.started} tone="bg-muted-foreground/50" />
                 </ul>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium">By faculty</CardTitle>
+                <p className="text-xs text-muted-foreground">Click a faculty to filter by it.</p>
+              </CardHeader>
+              <CardContent>
+                <ShareBars
+                  rows={[...s.byFaculty]
+                    .sort((a, b) => compareMinor(b.amount, a.amount))
+                    .map((r) => ({
+                      key: r.facultyCode ?? "__none__",
+                      label: r.facultyCode === null ? "No faculty yet" : (r.facultyName ?? facultyIndex.get(r.facultyCode)?.name ?? r.facultyCode),
+                      hint: r.facultyCode === null ? "Payers whose department has no faculty yet (needs review), or no department" : r.facultyCode,
+                      amount: r.amount,
+                      count: r.count,
+                      selected: r.facultyCode !== null && values.faculty === r.facultyCode,
+                      onSelect:
+                        r.facultyCode === null
+                          ? undefined
+                          : () => set(values.faculty === r.facultyCode ? { faculty: "", department: "" } : { faculty: r.facultyCode!, department: "" }),
+                    }))}
+                />
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium">By department</CardTitle>
+              </CardHeader>
+              <CardContent className="max-h-80 overflow-y-auto">
+                <ShareBars
+                  rows={[...s.byDepartment]
+                    .sort((a, b) => compareMinor(b.amount, a.amount))
+                    .map((r) => ({
+                      key: r.department ?? "__none__",
+                      label: r.department === null ? "No department" : (r.departmentName ?? r.department),
+                      hint: r.department ?? undefined,
+                      amount: r.amount,
+                      count: r.count,
+                    }))}
+                />
               </CardContent>
             </Card>
           </div>

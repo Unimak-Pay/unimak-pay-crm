@@ -6,18 +6,20 @@ import { useState } from "react";
 import { api, call } from "@/api/client";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
+import { departmentLabel, useAcademics } from "@/components/academics";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ServerError } from "@/components/form-dialog";
 import { GatedButton } from "@/components/permission";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { AnyCell, describeMatchers, EMPTY_MATCHERS, MatcherInputs, matcherErrors, toMatchers, type MatcherValues } from "./matchers";
+import { AnyCell, DepartmentCell, describeMatchers, EMPTY_MATCHERS, MatcherInputs, matcherErrors, toMatchers, type MatcherValues } from "./matchers";
 
 type Rule = components["schemas"]["EligibilityRule"];
 const ANY = "__any__";
 
 export function EligibilityRules({ feeId, rules, payerKind }: { feeId: string; rules: Rule[]; payerKind: string }) {
   const qc = useQueryClient();
+  const { departments } = useAcademics();
   const [values, setValues] = useState<MatcherValues>(EMPTY_MATCHERS);
   const [finalYear, setFinalYear] = useState<"" | "true" | "false">("");
   const [errors, setErrors] = useState<Partial<Record<keyof MatcherValues, string>>>({});
@@ -83,7 +85,7 @@ export function EligibilityRules({ feeId, rules, payerKind }: { feeId: string; r
                   <AnyCell value={r.programCode} />
                 </TableCell>
                 <TableCell>
-                  <AnyCell value={r.department} />
+                  <DepartmentCell code={r.department} />
                 </TableCell>
                 <TableCell>
                   <AnyCell value={r.level} />
@@ -150,7 +152,7 @@ export function EligibilityRules({ feeId, rules, payerKind }: { feeId: string; r
       >
         {deleting && (
           <p>
-            Payers matching <strong>{describeMatchers(deleting)}</strong> will no longer be eligible through this rule.
+            Payers matching <strong>{describeMatchers(deleting, (c) => departmentLabel(c, departments))}</strong> will no longer be eligible through this rule.
             {rules.length === 1 && " It is the last rule: afterwards every payer of this kind owes the fee."}
           </p>
         )}

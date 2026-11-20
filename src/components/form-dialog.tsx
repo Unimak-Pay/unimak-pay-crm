@@ -30,7 +30,7 @@ export function FormDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={(o) => !pending && onOpenChange(o)}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="max-h-[90svh] overflow-y-auto sm:max-w-lg">
         <form onSubmit={onSubmit} noValidate className="space-y-4">
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>

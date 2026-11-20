@@ -3,6 +3,7 @@ import {
   BadgeDollarSign,
   Banknote,
   FileClock,
+  GraduationCap,
   Inbox,
   LayoutDashboard,
   Layers,
@@ -32,6 +33,7 @@ export const NAV: NavGroup[] = [
     items: [
       { href: "/fees", label: "Fees", icon: BadgeDollarSign, op: "adminFees" },
       { href: "/fees/types", label: "Fee types", icon: Tags, op: "adminFeeTypes" },
+      { href: "/academics", label: "Faculties & departments", icon: GraduationCap, op: "adminListFaculties" },
     ],
   },
   {
@@ -63,6 +65,8 @@ export function activeHref(pathname: string): string | null {
     }
   return best;
 }
+
+export const ACADEMICS_HREF = "/academics";
 
 export const APP_NAME = "UNIMAK Pay";
 export const AppIcon = Layers;

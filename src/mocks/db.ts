@@ -28,35 +28,41 @@ export const mockNow = () => NOW;
 const iso = (ms: number) => new Date(ms).toISOString();
 const DAY = 86_400_000;
 
+const NONE: string[] = [];
 export const PERSONAS = {
-  "super@unimak.test": { role: "SUPER_ADMIN", name: "Aminata Sesay", mfaEnrolled: true, departments: [] as string[] },
-  "bursar@unimak.test": { role: "BURSAR", name: "Ibrahim Kamara", mfaEnrolled: false, departments: [] },
-  "finance@unimak.test": { role: "FINANCE_OFFICER", name: "Fatmata Conteh", mfaEnrolled: false, departments: [] },
-  "hod@unimak.test": { role: "HEAD_OF_DEPARTMENT", name: "Dr. Musa Bangura", mfaEnrolled: false, departments: ["COMPUTING"] },
-  "auditor@unimak.test": { role: "AUDITOR", name: "Hawa Koroma", mfaEnrolled: false, departments: [] },
-} as const;
+  "super@unimak.test": { role: "SUPER_ADMIN", name: "Aminata Sesay", mfaEnrolled: true, departments: NONE, faculties: NONE },
+  "bursar@unimak.test": { role: "BURSAR", name: "Ibrahim Kamara", mfaEnrolled: false, departments: NONE, faculties: NONE },
+  "finance@unimak.test": { role: "FINANCE_OFFICER", name: "Fatmata Conteh", mfaEnrolled: false, departments: NONE, faculties: NONE },
+  "hod@unimak.test": { role: "HEAD_OF_DEPARTMENT", name: "Dr. Musa Bangura", mfaEnrolled: false, departments: ["COMPUTING"], faculties: NONE },
+  "dean@unimak.test": { role: "DEAN", name: "Prof. Isata Turay", mfaEnrolled: false, departments: NONE, faculties: ["FAC-SCI-TECH"] },
+  "auditor@unimak.test": { role: "AUDITOR", name: "Hawa Koroma", mfaEnrolled: false, departments: NONE, faculties: NONE },
+} as const satisfies Record<string, { role: S["AdminRole"]; name: string; mfaEnrolled: boolean; departments: string[]; faculties: string[] }>;
 export type PersonaEmail = keyof typeof PERSONAS;
 
 const ALL_PERMS: S["Permission"][] = [
   "fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export",
   "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "accounts.manage", "payouts.read",
   "payouts.manage", "transfers.read", "transfers.retry", "reconciliation.read", "reconciliation.manage", "outbox.read",
-  "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage",
+  "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage", "academics.manage",
 ];
-/** Mirrors the backend's role bundles (fixtures only; the app reads `me.permissions`). */
+/**
+ * Mirrors the backend's role bundles (fixtures only; the app reads `me.permissions`). Commission
+ * transfers (transfers.read / transfers.retry) are super-admin only unless granted on their own.
+ */
 export const ROLE_PERMISSIONS: Record<S["AdminRole"], S["Permission"][]> = {
   SUPER_ADMIN: ALL_PERMS,
   BURSAR: [
     "fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export",
-    "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "payouts.read", "transfers.read",
-    "transfers.retry", "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "reports.read",
+    "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "payouts.read",
+    "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "reports.read",
   ],
   FINANCE_OFFICER: [
-    "payers.read", "payments.read", "payments.export", "receipts.resend", "accounts.read", "payouts.read", "transfers.read",
+    "payers.read", "payments.read", "payments.export", "receipts.resend", "accounts.read", "payouts.read",
     "reconciliation.read", "reports.read",
   ],
   HEAD_OF_DEPARTMENT: ["fees.read", "payers.read", "payments.read", "reports.read"],
-  AUDITOR: ALL_PERMS.filter((p) => p.endsWith(".read")),
+  DEAN: ["fees.read", "payers.read", "payments.read", "reports.read"],
+  AUDITOR: ALL_PERMS.filter((p) => p.endsWith(".read") && p !== "transfers.read"),
 };
 
 const FEE_TYPES: [string, string, S["PayerKind"], S["Recurrence"], string][] = [
@@ -66,12 +72,32 @@ const FEE_TYPES: [string, string, S["PayerKind"], S["Recurrence"], string][] = [
   ["DEPT", "Department levy", "STUDENT", "PER_YEAR", "30000"],
   ["GRAD", "Graduation", "STUDENT", "ONCE", "80000"],
 ];
+/** [code, name, active] */
+const FACULTIES = [
+  ["FAC-SCI-TECH", "Faculty of Science & Technology", true],
+  ["FAC-SOC-SCI", "Faculty of Social Sciences", true],
+  ["FAC-NURSING-AHS", "Faculty of Nursing & Allied Health Sciences", true],
+  ["FAC-LAW", "Faculty of Law", true],
+  ["FAC-AGRIC", "Faculty of Agriculture", false],
+] as const;
+/** [code, name, facultyCode | null (needs review), active] */
+const DEPARTMENTS = [
+  ["COMPUTING", "Computer Science", "FAC-SCI-TECH", true],
+  ["INFO-TECH", "Information Technology", "FAC-SCI-TECH", true],
+  ["MATHS", "Mathematics", "FAC-SCI-TECH", false],
+  ["ECONOMICS", "Economics", "FAC-SOC-SCI", true],
+  ["NURSING", "Nursing", "FAC-NURSING-AHS", true],
+  ["LAW", "Law", "FAC-LAW", true],
+  // the portal sent this one; nobody has set it up yet
+  ["MASS-COMM", "MASS-COMM", null, true],
+] as const;
 const PROGRAMS = [
   ["BSC-CS", "COMPUTING"],
-  ["BSC-IT", "COMPUTING"],
+  ["BSC-IT", "INFO-TECH"],
   ["BA-ECON", "ECONOMICS"],
   ["BSC-NURS", "NURSING"],
   ["LLB", "LAW"],
+  ["BA-MC", "MASS-COMM"],
 ] as const;
 const FIRST = ["Mohamed", "Fatmata", "Abdul", "Isatu", "Alhaji", "Mariama", "Sorie", "Kadiatu", "Osman", "Adama"];
 const LAST = ["Kamara", "Sesay", "Bangura", "Conteh", "Koroma", "Turay", "Jalloh", "Mansaray", "Kargbo", "Fofanah"];
@@ -81,6 +107,14 @@ export function createDb() {
   const r = rng(42);
   const pick = <T,>(a: readonly T[]) => a[Math.floor(r() * a.length)];
 
+  const faculties: S["Faculty"][] = FACULTIES.map(([code, name, active]) => ({
+    id: uuid(18), code, name, active, createdAt: iso(NOW - 300 * DAY), updatedAt: iso(NOW - 300 * DAY),
+  }));
+  const departments: S["Department"][] = DEPARTMENTS.map(([code, name, facultyCode, active]) => ({
+    id: uuid(19), code, name, facultyId: faculties.find((f) => f.code === facultyCode)?.id ?? null, active, needsReview: facultyCode === null,
+    createdAt: iso(NOW - (facultyCode ? 300 : 3) * DAY), updatedAt: iso(NOW - (facultyCode ? 300 : 3) * DAY),
+  }));
+
   const users: S["AdminUser"][] = Object.entries(PERSONAS).map(([email, p], i) => ({
     id: uuid(1),
     email,
@@ -89,6 +123,7 @@ export function createDb() {
     role: p.role,
     extraPermissions: [],
     departments: [...p.departments],
+    faculties: [...p.faculties],
     active: true,
     lastLoginAt: iso(NOW - (i + 1) * 3_600_000),
     createdBy: i === 0 ? "cli:setup" : null,
@@ -97,12 +132,12 @@ export function createDb() {
   }));
   users.push({
     id: uuid(1), email: "pending@unimak.test", authUserId: null, name: "Pending Invite", role: "FINANCE_OFFICER",
-    extraPermissions: [], departments: [], active: true, lastLoginAt: null, createdBy: users[0].id,
+    extraPermissions: [], departments: [], faculties: [], active: true, lastLoginAt: null, createdBy: users[0].id,
     createdAt: iso(NOW - 2 * DAY), updatedAt: iso(NOW - 2 * DAY),
   });
   users.push({
     id: uuid(1), email: "race@unimak.test", authUserId: null, name: "Signs In Meanwhile", role: "AUDITOR",
-    extraPermissions: [], departments: [], active: true, lastLoginAt: null, createdBy: users[0].id,
+    extraPermissions: [], departments: [], faculties: [], active: true, lastLoginAt: null, createdBy: users[0].id,
     createdAt: iso(NOW - DAY), updatedAt: iso(NOW - DAY),
   });
 
@@ -148,7 +183,7 @@ export function createDb() {
         // tie-breaker: without it an international nursing student would match two equally specific rules
         { id: uuid(6), feeId: fee.id, programCode: "BSC-NURS", department: null, level: null, residency: "INTERNATIONAL", intake: null, amount: "1000000", createdAt: fee.createdAt },
       );
-      instalmentRules.push({ id: uuid(7), feeId: fee.id, programCode: "BSC-NURS", minInstalment: "150000", updatedBy: users[1].id, updatedAt: iso(NOW - 20 * DAY) });
+      instalmentRules.push({ id: uuid(7), feeId: fee.id, department: "NURSING", minInstalment: "150000", updatedBy: users[1].id, updatedAt: iso(NOW - 20 * DAY) });
     }
     if (ft.code === "DEPT") {
       eligibilityRules.push({ id: uuid(7), feeId: fee.id, programCode: null, department: "COMPUTING", level: null, residency: null, intake: null, finalYear: null });
@@ -189,13 +224,17 @@ export function createDb() {
     const ref = isApplicant ? `APP-2026-${String(1000 + i).padStart(4, "0")}` : `UNI-2025-${String(i).padStart(4, "0")}`;
     const id = uuid(8);
     const orderNumber = completed ? `3BMR${Math.floor(r() * 36 ** 6).toString(36).toUpperCase().padStart(6, "0")}QX` : null;
+    // by transfer count, not payment index, so a few FAILED / SUBMITTED transfers always exist
+    const tn = transfers.length;
+    const tFailed = tn % 23 === 7;
+    const tStuck = tn % 29 === 11;
     const transfer: S["Transfer"] | null = completed
       ? {
           id: uuid(9), kind: "COMMISSION", paymentId: id, sourceAccount: `fac-${ft.code.toLowerCase()}01HX`, destinationAccount: "fac-platform01HX",
-          amount: platformFee, status: i % 41 === 7 ? "FAILED" : i % 53 === 11 ? "SUBMITTED" : "COMPLETED", attempt: 1,
-          monimeTransferId: `trn-${id.slice(-8)}`, failureCode: i % 41 === 7 ? "insufficient_funds" : null,
-          failureMessage: i % 41 === 7 ? "Source account balance too low at the time of transfer" : null,
-          createdAt: iso(completedMs!), updatedAt: iso(completedMs! + 5000), completedAt: i % 41 === 7 || i % 53 === 11 ? null : iso(completedMs! + 5000),
+          amount: platformFee, status: tFailed ? "FAILED" : tStuck ? "SUBMITTED" : "COMPLETED", attempt: 1,
+          monimeTransferId: `trn-${id.slice(-8)}`, failureCode: tFailed ? "insufficient_funds" : null,
+          failureMessage: tFailed ? "Source account balance too low at the time of transfer" : null,
+          createdAt: iso(completedMs!), updatedAt: iso(completedMs! + 5000), completedAt: tFailed || tStuck ? null : iso(completedMs! + 5000),
         }
       : null;
     if (transfer) transfers.push(transfer);
@@ -217,7 +256,8 @@ export function createDb() {
       createdAt: iso(status === "PENDING" ? NOW - (stale ? 50 : 10) * 60_000 : createdMs),
       updatedAt: iso(completedMs ?? createdMs),
       feeTypeCode: ft.code, feeName: fee.name,
-      payer: { kind: ft.payerKind, ref, fullName: `${pick(FIRST)} ${pick(LAST)}`, programCode, department },
+      // names are filled in by the handlers from the current departments/faculties
+      payer: { kind: ft.payerKind, ref, fullName: `${pick(FIRST)} ${pick(LAST)}`, programCode, department, departmentName: null, facultyCode: null, facultyName: null },
       receiptNumber: completed ? `UNIMAK-2026-${String(++receiptNo).padStart(6, "0")}` : null,
       ledgerEntry: entry, commissionTransfer: transfer,
     });
@@ -326,6 +366,7 @@ export function createDb() {
     };
   });
 
+  const pendingUser = users.find((u) => u.email === "pending@unimak.test")!;
   const audit: S["AuditLog"][] = [
     ...payouts.slice(0, 4).map((p) => ({
       id: uuid(17), actorId: users[0].id, action: "payout.create", entity: "Payout", entityId: p.id, before: null,
@@ -336,8 +377,8 @@ export function createDb() {
       before: { status: "DRAFT", allowInstalments: false }, after: { status: "ACTIVE", allowInstalments: true }, at: iso(NOW - 40 * DAY),
     },
     {
-      id: uuid(17), actorId: users[0].id, action: "user.create", entity: "AdminUser", entityId: users[5].id, before: null,
-      after: { email: users[5].email, role: users[5].role }, at: users[5].createdAt,
+      id: uuid(17), actorId: users[0].id, action: "user.create", entity: "AdminUser", entityId: pendingUser.id, before: null,
+      after: { email: pendingUser.email, role: pendingUser.role }, at: pendingUser.createdAt,
     },
   ].sort((a, b) => b.at.localeCompare(a.at));
 
@@ -348,5 +389,5 @@ export function createDb() {
     { providerId: "uba001", name: "UBA Sierra Leone", active: false, canPayTo: false },
   ];
 
-  return { users, feeTypes, accounts, fees, rateRules, eligibilityRules, instalmentRules, payments, transfers, ledger, payouts, outbox, runs, items, webhookEvents, audit, banks };
+  return { faculties, departments, users, feeTypes, accounts, fees, rateRules, eligibilityRules, instalmentRules, payments, transfers, ledger, payouts, outbox, runs, items, webhookEvents, audit, banks };
 }

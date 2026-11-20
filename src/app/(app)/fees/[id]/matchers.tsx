@@ -2,6 +2,7 @@
 
 import { z } from "zod";
 import type { components } from "@/api/schema.gen";
+import { DepartmentName, DepartmentSelect } from "@/components/academics";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -11,7 +12,7 @@ const ANY = "__any__";
 /** Form state: strings, "" = any. */
 export const zMatchers = z.object({
   programCode: z.string().trim().max(20),
-  department: z.string().trim().max(50),
+  department: z.string().max(50),
   level: z.string().regex(/^$|^([1-9]|10)$/, "1–10"),
   residency: z.enum(["", "LOCAL", "INTERNATIONAL"]),
   intake: z.string().regex(/^$|^[A-Za-z0-9-]{4,20}$/, "Like 2026-SEP"),
@@ -24,7 +25,8 @@ export const EMPTY_MATCHERS: MatcherValues = { programCode: "", department: "", 
 export function toMatchers(v: MatcherValues): Matchers {
   return {
     programCode: v.programCode ? v.programCode.toUpperCase() : null,
-    department: v.department ? v.department.toUpperCase() : null,
+    // department codes are exact (case-sensitive), picked from the list
+    department: v.department || null,
     level: v.level ? Number(v.level) : null,
     residency: v.residency || null,
     intake: v.intake ? v.intake.toUpperCase() : null,
@@ -45,16 +47,20 @@ export function specificity(m: Matchers): number {
   return [m.programCode, m.department, m.level, m.residency, m.intake].filter((x) => x !== null && x !== undefined).length;
 }
 
-/** "BSC-NURS · international" / "Everyone". */
-export function describeMatchers(m: Matchers): string {
+/** "BSC-NURS · international" / "Everyone". Pass department names to show them instead of codes. */
+export function describeMatchers(m: Matchers, departmentName: (code: string) => string = (c) => c): string {
   const parts = [
     m.programCode,
-    m.department && `dept ${m.department}`,
+    m.department && departmentName(m.department),
     m.level && `level ${m.level}`,
     m.residency && m.residency.toLowerCase(),
     m.intake && `intake ${m.intake}`,
   ].filter(Boolean);
   return parts.length ? parts.join(" · ") : "Everyone";
+}
+
+export function DepartmentCell({ code }: { code: string | null | undefined }) {
+  return code ? <DepartmentName code={code} /> : <span className="text-muted-foreground">any</span>;
 }
 
 export function AnyCell({ value }: { value: string | number | null | undefined }) {
@@ -85,7 +91,7 @@ export function MatcherInputs({ values, onChange, errors = {}, disabled, idPrefi
     [
       "department",
       <>
-        <Input aria-label="Department" placeholder="any dept" value={values.department} disabled={disabled} onChange={(e) => onChange({ department: e.target.value })} className={cls} />
+        <DepartmentSelect aria-label="Department" anyLabel="any department" value={values.department} disabled={disabled} onChange={(department) => onChange({ department })} className="w-44" />
         {errors.department && <p className="text-xs text-destructive">{errors.department}</p>}
       </>,
     ],

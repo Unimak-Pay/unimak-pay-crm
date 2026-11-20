@@ -7,6 +7,7 @@ import { api, call } from "@/api/client";
 import { errorMessage, isApiError } from "@/api/errors";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
+import { departmentLabel, useAcademics } from "@/components/academics";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Money } from "@/components/format";
 import { MoneyInput, toMajorInput } from "@/components/money-input";
@@ -16,7 +17,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { compareMinor, formatSle, parseSleInput } from "@/lib/money";
-import { AnyCell, describeMatchers, EMPTY_MATCHERS, fromMatchers, MatcherInputs, matcherErrors, specificity, toMatchers, type MatcherValues } from "./matchers";
+import { AnyCell, DepartmentCell, describeMatchers, EMPTY_MATCHERS, fromMatchers, MatcherInputs, matcherErrors, specificity, toMatchers, type MatcherValues } from "./matchers";
 
 type RateRule = components["schemas"]["RateRule"];
 
@@ -112,6 +113,7 @@ function RuleEditor({
 
 export function RateRules({ feeId, rules }: { feeId: string; rules: RateRule[] }) {
   const qc = useQueryClient();
+  const { departments } = useAcademics();
   const canOp = useCanOp();
   const [editing, setEditing] = useState<string | "new" | null>(null);
   const [deleting, setDeleting] = useState<RateRule | null>(null);
@@ -163,7 +165,7 @@ export function RateRules({ feeId, rules }: { feeId: string; rules: RateRule[] }
                     <AnyCell value={r.programCode} />
                   </TableCell>
                   <TableCell>
-                    <AnyCell value={r.department} />
+                    <DepartmentCell code={r.department} />
                   </TableCell>
                   <TableCell>
                     <AnyCell value={r.level} />
@@ -208,7 +210,7 @@ export function RateRules({ feeId, rules }: { feeId: string; rules: RateRule[] }
       >
         {deleting && (
           <p>
-            Payers matching <strong>{describeMatchers(deleting)}</strong> will no longer be priced at <strong>{formatSle(deleting.amount)}</strong>; the next
+            Payers matching <strong>{describeMatchers(deleting, (c) => departmentLabel(c, departments))}</strong> will no longer be priced at <strong>{formatSle(deleting.amount)}</strong>; the next
             most specific rule applies to new obligations. The server refuses if this rule breaks a tie.
           </p>
         )}

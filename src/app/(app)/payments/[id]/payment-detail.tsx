@@ -193,7 +193,13 @@ function Detail({ id }: { id: string }) {
                 <CopyValue value={p.payer.ref} />
               </Field>
               <Field label="Program">{p.payer.programCode}</Field>
-              <Field label="Department">{p.payer.department ?? "—"}</Field>
+              <Field label="Department">
+                {p.payer.departmentName ?? p.payer.department ?? "—"}
+                {p.payer.department && p.payer.departmentName && p.payer.departmentName !== p.payer.department && (
+                  <span className="ml-1 font-mono text-xs text-muted-foreground">{p.payer.department}</span>
+                )}
+              </Field>
+              <Field label="Faculty">{p.payer.facultyName ?? (p.payer.department ? "No faculty yet" : "—")}</Field>
               {canOp("adminListPayments") && (
                 <Field label="Other payments">
                   <Link className="text-sm underline-offset-2 hover:underline" href={`/payments?payerRef=${encodeURIComponent(p.payer.ref)}`}>
@@ -253,9 +259,9 @@ function Detail({ id }: { id: string }) {
                   </Field>
                 )}
               </Fields>
-            ) : (
+            ) : canOp("adminListTransfers") ? (
               <p className="text-muted-foreground">No commission transfer yet.</p>
-            )}
+            ) : null}
           </CardContent>
         </Card>
       </div>

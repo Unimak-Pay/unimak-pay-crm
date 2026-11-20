@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { awaitingFirstSignIn } from "../invitation";
 import { ResendInviteButton } from "../resend-invite";
-import { ActiveToggle, EditButton, UserStateBadge } from "../users";
+import { ActiveToggle, EditButton, UserScope, UserStateBadge } from "../users";
 
 function Detail({ id }: { id: string }) {
   const q = useQuery({ queryKey: qk.user(id), queryFn: () => call(api.GET("/v1/admin/users/{id}", { params: { path: { id } } })) });
@@ -57,7 +57,9 @@ function Detail({ id }: { id: string }) {
                 {u.role.replace(/_/g, " ")}
               </Badge>
             </Field>
-            <Field label="Departments">{u.departments.join(", ") || "—"}</Field>
+            <Field label={u.role === "DEAN" ? "Faculties" : "Departments"}>
+              <UserScope user={u} />
+            </Field>
             <Field label="Extra permissions">
               <span className="font-mono text-xs">{u.extraPermissions.join(", ") || "—"}</span>
             </Field>

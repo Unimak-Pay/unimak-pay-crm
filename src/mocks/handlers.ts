@@ -37,14 +37,15 @@ function authenticate(request: Request): Principal | Response {
   if (MFA_ROLES.includes(user.role) && claims.aal !== "aal2") {
     return fail(403, "MFA_REQUIRED", "Two-factor authentication is required for this role");
   }
-  const scoped = user.role === "HEAD_OF_DEPARTMENT";
+  const scoped = user.role === "HEAD_OF_DEPARTMENT" || user.role === "DEAN";
   const perms = new Set<Permission>([...ROLE_PERMISSIONS[user.role], ...(user.extraPermissions as Permission[])]);
   return {
     id: user.id,
     email: user.email,
     role: user.role,
     permissions: [...perms],
-    departments: scoped ? user.departments : [],
+    departments: user.role === "DEAN" ? departmentsOfFaculties(user.faculties) : user.role === "HEAD_OF_DEPARTMENT" ? user.departments : [],
+    faculties: user.role === "DEAN" ? user.faculties : [],
     departmentScoped: scoped,
     aal: claims.aal,
   };
@@ -106,6 +107,57 @@ function inviteOutcome(email: string): S["InviteOutcome"] {
   return { status: "SENT" };
 }
 
+// ── faculties & departments ──
+const ACADEMIC_CODE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/;
+const facultyOf = (d: S["Department"]) => db.faculties.find((f) => f.id === d.facultyId) ?? null;
+function departmentItem(d: S["Department"]): S["DepartmentListItem"] {
+  const f = facultyOf(d);
+  return { ...d, facultyCode: f?.code ?? null, facultyName: f?.name ?? null };
+}
+/** A dean's scope: every department of their faculties, as they are now. */
+function departmentsOfFaculties(codes: string[]): string[] {
+  const ids = db.faculties.filter((f) => codes.includes(f.code)).map((f) => f.id);
+  return db.departments.filter((d) => d.facultyId && ids.includes(d.facultyId)).map((d) => d.code);
+}
+/** Like the backend: every code must be an existing, active, reviewed department. */
+function unusableDepartment(codes: (string | null | undefined)[]): Response | null {
+  for (const c of new Set(codes.filter((x): x is string => !!x))) {
+    const d = db.departments.find((x) => x.code === c);
+    if (!d) return fail(400, "VALIDATION", `Unknown department ${c}`, { department: c });
+    if (!d.active) return fail(400, "VALIDATION", `Department ${c} is inactive`, { department: c });
+    if (d.needsReview) return fail(400, "VALIDATION", `Department ${c} needs review (give it a name and faculty first)`, { department: c });
+  }
+  return null;
+}
+function unusableFaculty(codes: string[]): Response | null {
+  for (const c of new Set(codes)) {
+    const f = db.faculties.find((x) => x.code === c);
+    if (!f) return fail(400, "VALIDATION", `Unknown faculty ${c}`, { faculty: c });
+    if (!f.active) return fail(400, "VALIDATION", `Faculty ${c} is inactive`, { faculty: c });
+  }
+  return null;
+}
+function departmentUses(code: string): string[] {
+  const open = new Set(db.fees.filter((f) => f.status !== "CLOSED").map((f) => f.id));
+  const heads = db.users.filter((u) => u.active && u.role === "HEAD_OF_DEPARTMENT" && u.departments.includes(code));
+  const n = (rules: { feeId: string; department: string | null }[]) => rules.filter((r) => r.department === code && open.has(r.feeId)).length;
+  const rate = n(db.rateRules);
+  const elig = n(db.eligibilityRules);
+  const inst = n(db.instalmentRules);
+  return [
+    ...(heads.length ? [`heads of department: ${heads.map((h) => h.email).join(", ")}`] : []),
+    ...(rate ? [`${rate} rate rule(s)`] : []),
+    ...(elig ? [`${elig} eligibility rule(s)`] : []),
+    ...(inst ? [`${inst} minimum-instalment rule(s)`] : []),
+  ];
+}
+/** Payer department/faculty names come from the departments as they are now. */
+function withNames<T extends { payer: S["AdminPayment"]["payer"] }>(p: T): T {
+  const d = db.departments.find((x) => x.code === p.payer.department);
+  const f = d ? facultyOf(d) : null;
+  return { ...p, payer: { ...p.payer, departmentName: d?.name ?? null, facultyCode: f?.code ?? null, facultyName: f?.name ?? null } };
+}
+
 // ── payments ──
 function filterPayments(url: URL, me: Principal) {
   const q = Object.fromEntries(url.searchParams);
@@ -114,6 +166,8 @@ function filterPayments(url: URL, me: Principal) {
     if (q.status && p.status !== q.status) return false;
     if (q.channel && p.channel !== q.channel) return false;
     if (q.feeType && p.feeTypeCode !== q.feeType) return false;
+    if (q.department && p.payer.department !== q.department) return false;
+    if (q.faculty && !departmentsOfFaculties([q.faculty]).includes(p.payer.department ?? "")) return false;
     if (q.payerRef && p.payer.ref.toLowerCase() !== q.payerRef.toLowerCase()) return false;
     if (q.ref && ![p.paymentRef, p.monimeOrderNumber, p.monimePaymentId].includes(q.ref.trim())) return false;
     if (q.from && p.createdAt < q.from) return false;
@@ -124,7 +178,7 @@ function filterPayments(url: URL, me: Principal) {
 function listPayment(p: S["AdminPaymentDetail"]): S["AdminPayment"] {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { ledgerEntry, commissionTransfer, ...rest } = p;
-  return rest;
+  return withNames(rest);
 }
 
 // ── reports ──
@@ -140,12 +194,17 @@ function summary(url: URL, me: Principal) {
   if (days < 1 || days > 366) return invalid("The range must be 1 to 366 days");
   const feeType = url.searchParams.get("feeType");
   const channel = url.searchParams.get("channel") as S["Channel"] | null;
+  const department = url.searchParams.get("department");
+  const faculty = url.searchParams.get("faculty");
+  const facultyDepts = faculty ? departmentsOfFaculties([faculty]) : null;
   const inScope = db.payments.filter(
     (p) =>
       (!me.departmentScoped || me.departments.includes(p.payer.department ?? "")) &&
       (!feeType || p.feeTypeCode === feeType) &&
-      (!channel || p.channel === channel),
-  );
+      (!channel || p.channel === channel) &&
+      (!department || p.payer.department === department) &&
+      (!facultyDepts || facultyDepts.includes(p.payer.department ?? "")),
+  ).map(withNames);
   const inRange = (iso: string | null) => !!iso && iso.slice(0, 10) >= from && iso.slice(0, 10) <= to;
   const done = inScope.filter((p) => p.status === "COMPLETED" && inRange(p.completedAt));
   const sum = (xs: string[]) => xs.reduce((s, x) => s + BigInt(x), 0n);
@@ -168,7 +227,7 @@ function summary(url: URL, me: Principal) {
   const caT = (xs: { amount: string }[]) => ({ count: xs.length, amount: sum(xs.map((x) => x.amount)).toString() });
   return HttpResponse.json({
     range: { from, to, days, timezone: "Africa/Freetown (UTC)" },
-    filters: { feeType, channel, departments: me.departmentScoped ? me.departments : null },
+    filters: { feeType, channel, department, faculty, departments: me.departmentScoped ? me.departments : null },
     collected: {
       amount: amount.toString(),
       count: done.length,
@@ -186,6 +245,19 @@ function summary(url: URL, me: Principal) {
       count: ps.length,
       platformFees: sum(ps.map((p) => p.platformFee)).toString(),
       net: sum(ps.map((p) => p.netAmount)).toString(),
+    })),
+    byFaculty: [...Map.groupBy(done, (p) => p.payer.facultyCode).entries()].map(([code, ps]) => ({
+      facultyCode: code,
+      facultyName: ps[0].payer.facultyName,
+      amount: sum(ps.map((p) => p.amount)).toString(),
+      count: ps.length,
+    })),
+    byDepartment: [...Map.groupBy(done, (p) => p.payer.department).entries()].map(([code, ps]) => ({
+      department: code,
+      departmentName: ps[0].payer.departmentName,
+      facultyCode: ps[0].payer.facultyCode,
+      amount: sum(ps.map((p) => p.amount)).toString(),
+      count: ps.length,
     })),
     byChannel: (["USSD", "DOTS"] as const).map((c) => {
       const ps = done.filter((p) => p.channel === c);
@@ -314,9 +386,13 @@ export const apiHandlers = [
   // ── users & audit ──
   route("adminListUsers", () => HttpResponse.json([...db.users].sort((a, b) => a.email.localeCompare(b.email)))),
   route("adminCreateUser", async ({ request, me }) => {
-    const b = await body<{ email?: string; name?: string; role?: S["AdminRole"]; extraPermissions?: Permission[]; departments?: string[] }>(request);
+    const b = await body<{ email?: string; name?: string; role?: S["AdminRole"]; extraPermissions?: Permission[]; departments?: string[]; faculties?: string[] }>(request);
     if (!b.email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(b.email)) return invalid("email must be an email");
-    if (!b.role || !(b.role in ROLE_PERMISSIONS)) return invalid("role must be one of the following values: SUPER_ADMIN, BURSAR, FINANCE_OFFICER, HEAD_OF_DEPARTMENT, AUDITOR");
+    if (!b.role || !(b.role in ROLE_PERMISSIONS)) return invalid("role must be one of the following values: SUPER_ADMIN, BURSAR, FINANCE_OFFICER, HEAD_OF_DEPARTMENT, DEAN, AUDITOR");
+    if (b.role === "HEAD_OF_DEPARTMENT" && !b.departments?.length) return fail(400, "VALIDATION", "A head of department needs at least one department");
+    if (b.role === "DEAN" && !b.faculties?.length) return fail(400, "VALIDATION", "A dean needs at least one faculty");
+    const badScope = b.role === "HEAD_OF_DEPARTMENT" ? unusableDepartment(b.departments ?? []) : b.role === "DEAN" ? unusableFaculty(b.faculties ?? []) : null;
+    if (badScope) return badScope;
     const email = b.email.trim().toLowerCase();
     if (db.users.some((u) => u.email === email)) return fail(409, "CONFLICT", `An admin with email ${email} already exists`);
     const wanted = [...ROLE_PERMISSIONS[b.role], ...(b.extraPermissions ?? [])];
@@ -324,7 +400,8 @@ export const apiHandlers = [
     if (missing.length) return fail(403, "FORBIDDEN", `You cannot grant permissions you don't have: ${missing.join(", ")}`);
     const u: S["AdminUser"] = {
       id: uuid(1), email, authUserId: null, name: b.name || null, role: b.role, extraPermissions: b.extraPermissions ?? [],
-      departments: b.departments ?? [], active: true, lastLoginAt: null, createdBy: me.id, createdAt: now(), updatedAt: now(),
+      departments: b.role === "HEAD_OF_DEPARTMENT" ? (b.departments ?? []) : [], faculties: b.role === "DEAN" ? (b.faculties ?? []) : [],
+      active: true, lastLoginAt: null, createdBy: me.id, createdAt: now(), updatedAt: now(),
     };
     db.users.push(u);
     audit(me, "user.create", "AdminUser", u.id, null, u);
@@ -362,12 +439,22 @@ export const apiHandlers = [
       const missing = wanted.filter((p) => !me.permissions.includes(p));
       if (missing.length) return fail(403, "FORBIDDEN", `You cannot grant permissions you don't have: ${missing.join(", ")}`);
     }
+    const role = b.role ?? u.role;
+    if (role === "HEAD_OF_DEPARTMENT" && b.departments) {
+      const bad = unusableDepartment(b.departments);
+      if (bad) return bad;
+    }
+    if (role === "DEAN" && b.faculties) {
+      const bad = unusableFaculty(b.faculties);
+      if (bad) return bad;
+    }
     const before = { ...u };
     Object.assign(u, {
       ...(b.name !== undefined && { name: b.name || null }),
       ...(b.role && { role: b.role }),
       ...(b.extraPermissions && { extraPermissions: b.extraPermissions }),
       ...(b.departments && { departments: b.departments }),
+      ...(b.faculties && { faculties: b.faculties }),
       ...(b.active !== undefined && { active: b.active }),
       updatedAt: now(),
     });
@@ -382,21 +469,113 @@ export const apiHandlers = [
     );
   }),
 
+  // ── faculties & departments ──
+  route("adminListFaculties", () =>
+    HttpResponse.json(
+      db.faculties.map((f) => ({ ...f, departments: db.departments.filter((d) => d.facultyId === f.id).sort((a, b) => a.name.localeCompare(b.name)) })).sort((a, b) => a.name.localeCompare(b.name)),
+    ),
+  ),
+  route("adminCreateFaculty", async ({ request, me }) => {
+    const b = await body<{ code?: string; name?: string }>(request);
+    if (!b.code || !ACADEMIC_CODE.test(b.code)) return fail(400, "VALIDATION", 'Code: 1–40 letters, digits, "-", "_" or ".", starting with a letter or digit');
+    if (!b.name?.trim()) return invalid("name should not be empty");
+    if (db.faculties.some((f) => f.code === b.code)) return fail(409, "INVALID_STATE", `Faculty ${b.code} already exists`);
+    const f: S["Faculty"] = { id: uuid(18), code: b.code, name: b.name.trim(), active: true, createdAt: now(), updatedAt: now() };
+    db.faculties.push(f);
+    audit(me, "faculty.create", "Faculty", f.id, null, f);
+    return HttpResponse.json(f, { status: 201 });
+  }),
+  route("adminUpdateFaculty", async ({ request, params, me }) => {
+    const f = db.faculties.find((x) => x.code === params.code);
+    if (!f) return fail(404, "NOT_FOUND", `Faculty ${params.code} not found`);
+    const b = await body<{ name?: string; active?: boolean }>(request);
+    if (b.active === false && f.active) {
+      const active = db.departments.filter((d) => d.facultyId === f.id && d.active).map((d) => d.code);
+      if (active.length) return fail(409, "INVALID_STATE", `Faculty ${f.code} still has active departments: ${active.join(", ")}`, { departments: active });
+      const deans = db.users.filter((u) => u.active && u.role === "DEAN" && u.faculties.includes(f.code));
+      if (deans.length) return fail(409, "INVALID_STATE", `Faculty ${f.code} is still assigned to deans: ${deans.map((d) => d.email).join(", ")}`);
+    }
+    const before = { ...f };
+    Object.assign(f, { ...(b.name?.trim() && { name: b.name.trim() }), ...(b.active !== undefined && { active: b.active }), updatedAt: now() });
+    audit(me, "faculty.update", "Faculty", f.id, before, f);
+    return HttpResponse.json(f);
+  }),
+  route("adminListDepartments", ({ url }) => {
+    const q = Object.fromEntries(url.searchParams);
+    const fac = q.faculty ? db.faculties.find((f) => f.code === q.faculty) : null;
+    return HttpResponse.json(
+      db.departments
+        .filter(
+          (d) =>
+            (!q.faculty || d.facultyId === fac?.id) &&
+            (q.needsReview === undefined || String(d.needsReview) === q.needsReview) &&
+            (q.active === undefined || String(d.active) === q.active),
+        )
+        .map(departmentItem)
+        .sort((a, b) => a.code.localeCompare(b.code)),
+    );
+  }),
+  route("adminGetDepartment", ({ params }) => {
+    const d = db.departments.find((x) => x.code === params.code);
+    return d ? HttpResponse.json(departmentItem(d)) : fail(404, "NOT_FOUND", `Department ${params.code} not found`);
+  }),
+  route("adminCreateDepartment", async ({ request, me }) => {
+    const b = await body<{ code?: string; name?: string; facultyCode?: string }>(request);
+    if (!b.code || !ACADEMIC_CODE.test(b.code)) return fail(400, "VALIDATION", 'Code: 1–40 letters, digits, "-", "_" or ".", starting with a letter or digit');
+    if (!b.name?.trim()) return invalid("name should not be empty");
+    if (db.departments.some((d) => d.code === b.code)) return fail(409, "INVALID_STATE", `Department ${b.code} already exists`);
+    const f = db.faculties.find((x) => x.code === b.facultyCode);
+    if (!f) return fail(400, "VALIDATION", `Unknown faculty ${b.facultyCode}`, { faculty: b.facultyCode });
+    if (!f.active) return fail(409, "INVALID_STATE", `Faculty ${f.code} is inactive`, { faculty: f.code });
+    const d: S["Department"] = { id: uuid(19), code: b.code, name: b.name.trim(), facultyId: f.id, active: true, needsReview: false, createdAt: now(), updatedAt: now() };
+    db.departments.push(d);
+    audit(me, "department.create", "Department", d.id, null, d);
+    return HttpResponse.json(departmentItem(d), { status: 201 });
+  }),
+  route("adminUpdateDepartment", async ({ request, params, me }) => {
+    const d = db.departments.find((x) => x.code === params.code);
+    if (!d) return fail(404, "NOT_FOUND", `Department ${params.code} not found`);
+    const b = await body<{ name?: string; facultyCode?: string; active?: boolean }>(request);
+    let facultyId = d.facultyId;
+    if (b.facultyCode) {
+      const f = db.faculties.find((x) => x.code === b.facultyCode);
+      if (!f) return fail(400, "VALIDATION", `Unknown faculty ${b.facultyCode}`, { faculty: b.facultyCode });
+      if (!f.active) return fail(409, "INVALID_STATE", `Faculty ${f.code} is inactive`, { faculty: f.code });
+      facultyId = f.id;
+    }
+    if (d.needsReview && !facultyId && b.active !== false) return fail(400, "VALIDATION", `Department ${d.code} needs a faculty (facultyCode)`);
+    if (b.active === false && d.active) {
+      const uses = departmentUses(d.code);
+      if (uses.length) return fail(409, "INVALID_STATE", `Department ${d.code} is still used by ${uses.join("; ")} (on fees that aren't closed)`, { uses });
+    }
+    const before = { ...d };
+    Object.assign(d, {
+      ...(b.name?.trim() && { name: b.name.trim() }),
+      facultyId,
+      ...(b.active !== undefined && { active: b.active }),
+      needsReview: d.needsReview && !facultyId,
+      updatedAt: now(),
+    });
+    audit(me, "department.update", "Department", d.id, before, d);
+    return HttpResponse.json(departmentItem(d));
+  }),
+
   // ── reports ──
   route("adminReportsSummary", ({ url, me }) => summary(url, me)),
 
   // ── payments (export.csv before /:id) ──
   route("adminExportPayments", ({ url, me }) => {
-    const rows = filterPayments(url, me).slice().reverse();
+    const rows = filterPayments(url, me).slice().reverse().map(withNames);
     const cols = [
       "created_at", "completed_at", "payment_ref", "status", "channel", "collection_method", "fee_type", "fee_name", "payer_kind",
-      "payer_ref", "payer_name", "program", "department", "amount_sle", "monime_fee_sle", "platform_fee_sle", "net_sle",
+      "payer_ref", "payer_name", "program", "department", "department_name", "faculty", "faculty_name", "amount_sle", "monime_fee_sle", "platform_fee_sle", "net_sle",
       "payer_phone", "monime_order_number", "monime_payment_id", "receipt_number", "failure_reason", "payment_id",
     ];
     const lines = rows.map((p) =>
       [
         p.createdAt, p.completedAt, p.paymentRef, p.status, p.channel, p.collectionMethod, p.feeTypeCode, p.feeName, p.payer.kind,
-        p.payer.ref, p.payer.fullName, p.payer.programCode, p.payer.department, sle(p.amount), sle(p.monimeFee), sle(p.platformFee),
+        p.payer.ref, p.payer.fullName, p.payer.programCode, p.payer.department, p.payer.departmentName, p.payer.facultyCode,
+        p.payer.facultyName, sle(p.amount), sle(p.monimeFee), sle(p.platformFee),
         sle(p.netAmount), p.payerPhone, p.monimeOrderNumber, p.monimePaymentId, p.receiptNumber, p.failureReason, p.id,
       ].map(csvCell).join(","),
     );
@@ -408,7 +587,7 @@ export const apiHandlers = [
   route("adminGetPayment", ({ params, me }) => {
     const p = db.payments.find((x) => x.id === params.id);
     if (!p || (me.departmentScoped && !me.departments.includes(p.payer.department ?? ""))) return fail(404, "NOT_FOUND", "Payment not found");
-    return HttpResponse.json(p);
+    return HttpResponse.json(withNames({ ...p, commissionTransfer: me.permissions.includes("transfers.read") ? p.commissionTransfer : null }));
   }),
   route("adminReconcilePayment", ({ params, me }) => {
     const p = db.payments.find((x) => x.id === params.id);
@@ -555,7 +734,7 @@ export const apiHandlers = [
     const rules = db.rateRules.filter((r) => r.feeId === f.id && matches(r)).sort((a, b) => specificity(normMatchers(b)) - specificity(normMatchers(a)));
     const rule = rules[0];
     if (!rule) return HttpResponse.json({ ...base, eligible: true, reason: "No rate rule matches this payer", amount: null, rateRuleId: null, minInstalment: null });
-    const inst = db.instalmentRules.find((r) => r.feeId === f.id && r.programCode === payer.programCode);
+    const inst = db.instalmentRules.find((r) => r.feeId === f.id && r.department === payer.department);
     return HttpResponse.json({
       ...base, eligible: true, reason: null, amount: rule.amount, rateRuleId: rule.id,
       minInstalment: f.allowInstalments ? (inst?.minInstalment ?? f.defaultMinInstalment) : null,
@@ -567,6 +746,8 @@ export const apiHandlers = [
     const b = await body<Partial<Matchers> & { amount?: string }>(request);
     if (!b.amount || !/^[1-9]\d{0,17}$/.test(String(b.amount))) return invalid("amount must be a positive integer string of minor units");
     const m = normMatchers(b);
+    const badDept = unusableDepartment([m.department]);
+    if (badDept) return badDept;
     const others = db.rateRules.filter((r) => r.feeId === f.id).map(normMatchers);
     if (others.some((o) => MATCHER_KEYS.every((k) => o[k] === m[k]))) return fail(409, "CONFLICT", `A rate rule for ${describeMatchers(m)} already exists`);
     const tie = tieWith(m, others);
@@ -584,6 +765,8 @@ export const apiHandlers = [
     const b = await body<Partial<Matchers> & { amount?: string }>(request);
     if (!b.amount || !/^[1-9]\d{0,17}$/.test(String(b.amount))) return invalid("amount must be a positive integer string of minor units");
     const m = normMatchers(b);
+    const badDept = unusableDepartment([m.department]);
+    if (badDept) return badDept;
     const others = db.rateRules.filter((r) => r.feeId === params.id && r.id !== rule.id).map(normMatchers);
     const tie = tieWith(m, others);
     if (tie) return fail(409, "AMBIGUOUS_RATE_RULE", `A payer with ${describeMatchers(tie)} would match two equally specific rules. Add a rule for ${describeMatchers(tie)} first.`, { tieBreaker: tie });
@@ -609,6 +792,8 @@ export const apiHandlers = [
     const f = db.fees.find((x) => x.id === params.id);
     if (!f) return fail(404, "NOT_FOUND", "Fee not found");
     const b = await body<Partial<Matchers> & { finalYear?: boolean | null }>(request);
+    const badDept = unusableDepartment([b.department]);
+    if (badDept) return badDept;
     const rule: S["EligibilityRule"] = { id: uuid(7), feeId: f.id, ...normMatchers(b), finalYear: b.finalYear ?? null };
     db.eligibilityRules.push(rule);
     audit(me, "eligibilityRule.create", "Fee", f.id, null, rule);
@@ -626,21 +811,23 @@ export const apiHandlers = [
     if (!f) return fail(404, "NOT_FOUND", "Fee not found");
     const b = await body<{ minInstalment?: string }>(request);
     if (!b.minInstalment || !/^[1-9]\d{0,17}$/.test(String(b.minInstalment))) return invalid("minInstalment must be a positive integer string of minor units");
-    const code = params.programCode.toUpperCase();
-    let rule = db.instalmentRules.find((r) => r.feeId === f.id && r.programCode === code);
+    const code = params.department;
+    const badDept = unusableDepartment([code]);
+    if (badDept) return badDept;
+    let rule = db.instalmentRules.find((r) => r.feeId === f.id && r.department === code);
     const before = rule ? { ...rule } : null;
     if (rule) Object.assign(rule, { minInstalment: String(b.minInstalment), updatedBy: me.id, updatedAt: now() });
     else {
-      rule = { id: uuid(7), feeId: f.id, programCode: code, minInstalment: String(b.minInstalment), updatedBy: me.id, updatedAt: now() };
+      rule = { id: uuid(7), feeId: f.id, department: code, minInstalment: String(b.minInstalment), updatedBy: me.id, updatedAt: now() };
       db.instalmentRules.push(rule);
     }
     audit(me, "instalmentRule.set", "Fee", f.id, before, rule);
     return HttpResponse.json(rule);
   }),
   route("adminDeleteInstalment", ({ params, me }) => {
-    const code = params.programCode.toUpperCase();
-    const idx = db.instalmentRules.findIndex((r) => r.feeId === params.id && r.programCode === code);
-    if (idx < 0) return fail(404, "NOT_FOUND", "No instalment rule for this program");
+    const code = params.department;
+    const idx = db.instalmentRules.findIndex((r) => r.feeId === params.id && r.department === code);
+    if (idx < 0) return fail(404, "NOT_FOUND", "No instalment rule for this department");
     const [rule] = db.instalmentRules.splice(idx, 1);
     audit(me, "instalmentRule.delete", "Fee", params.id, rule, null);
     return HttpResponse.json({ deleted: true });
@@ -737,9 +924,10 @@ export const apiHandlers = [
     audit(me, "transfer.retry", "Transfer", t.id, before, t);
     return HttpResponse.json(t);
   }),
-  route("adminOutbox", ({ url }) => {
+  route("adminOutbox", ({ url, me }) => {
     const status = url.searchParams.get("status");
-    return page(db.outbox.filter((m) => !status || m.status === status), url);
+    const commission = me.permissions.includes("transfers.read");
+    return page(db.outbox.filter((m) => (!status || m.status === status) && (commission || m.type !== "monime.commission_transfer")), url);
   }),
   route("adminGetOutbox", ({ params }) => {
     const m = db.outbox.find((x) => x.id === params.id);
@@ -756,7 +944,7 @@ export const apiHandlers = [
   }),
 
   // ── reconciliation ──
-  route("adminReconciliation", () => {
+  route("adminReconciliation", ({ me }) => {
     const hourAgo = new Date(Date.parse(now()) - 3_600_000).toISOString();
     const weekAgo = new Date(Date.parse(now()) - 7 * 86_400_000).toISOString();
     const lists = {
@@ -773,6 +961,11 @@ export const apiHandlers = [
     const counts = Object.fromEntries(Object.entries(lists).map(([k, v]) => [k, v.length])) as S["ReconciliationSummary"]["counts"];
     const limit = 100;
     const capped = Object.fromEntries(Object.entries(lists).map(([k, v]) => [k, v.slice(0, limit)]));
+    if (!me.permissions.includes("transfers.read")) {
+      // commission transfers are super-admin only: the backend sends null, not an empty list
+      Object.assign(counts, { failedTransfers: null, stuckTransfers: null });
+      Object.assign(capped, { failedTransfers: null, stuckTransfers: null });
+    }
     return HttpResponse.json({ lastRun: db.runs[0] ?? null, counts, listLimit: limit, ...capped });
   }),
   route("adminRuns", ({ url }) => {

@@ -12,6 +12,7 @@ import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
 import { adminRoleValues, permissionValues } from "@/api/schema.gen";
 import { useMe } from "@/auth/auth-provider";
+import { DepartmentMultiSelect, departmentLabel, FacultyMultiSelect, useAcademics } from "@/components/academics";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { columnsFor, DataTable } from "@/components/data-table";
 import { DateTime } from "@/components/format";
@@ -33,9 +34,10 @@ type Permission = components["schemas"]["Permission"];
 const ROLE_HELP: Record<Role, string> = {
   SUPER_ADMIN: "Everything, incl. users, payouts and account provisioning. 2FA required.",
   BURSAR: "Fee setup, instalments, payments + reconcile, reconciliation, retries; reads accounts and payouts. 2FA required.",
-  FINANCE_OFFICER: "Reads payments, accounts, payouts, transfers, reconciliation.",
+  FINANCE_OFFICER: "Reads payments, accounts, payouts, reconciliation.",
   HEAD_OF_DEPARTMENT: "Reads fees and their departments' payments.",
-  AUDITOR: "Every read permission, incl. the audit log.",
+  DEAN: "Reads fees and the payments of every department in their faculties.",
+  AUDITOR: "Every read permission, incl. the audit log (not commission transfers).",
 };
 
 const schema = z
@@ -44,18 +46,18 @@ const schema = z
     name: z.string().trim().max(100),
     role: z.enum(adminRoleValues as [Role, ...Role[]]),
     extraPermissions: z.array(z.string()),
-    departments: z.string(),
+    departments: z.array(z.string()),
+    faculties: z.array(z.string()),
   })
   .superRefine((v, ctx) => {
-    if (v.role === "HEAD_OF_DEPARTMENT" && !parseDepartments(v.departments).length) {
+    if (v.role === "HEAD_OF_DEPARTMENT" && !v.departments.length) {
       ctx.addIssue({ code: "custom", path: ["departments"], message: "A head of department needs at least one department" });
+    }
+    if (v.role === "DEAN" && !v.faculties.length) {
+      ctx.addIssue({ code: "custom", path: ["faculties"], message: "A dean needs at least one faculty" });
     }
   });
 type Values = z.infer<typeof schema>;
-
-function parseDepartments(s: string): string[] {
-  return [...new Set(s.split(/[,\n]/).map((d) => d.trim().toUpperCase()).filter(Boolean))];
-}
 
 /** Invite or edit. The server refuses grants beyond your own permissions; its message is shown. */
 export function UserDialog({ user, open, onOpenChange }: { user?: User; open: boolean; onOpenChange(o: boolean): void }) {
@@ -64,8 +66,8 @@ export function UserDialog({ user, open, onOpenChange }: { user?: User; open: bo
   const form = useForm<Values>({
     resolver: zodResolver(schema),
     values: user
-      ? { email: user.email, name: user.name ?? "", role: user.role, extraPermissions: user.extraPermissions, departments: user.departments.join(", ") }
-      : { email: "", name: "", role: "FINANCE_OFFICER", extraPermissions: [], departments: "" },
+      ? { email: user.email, name: user.name ?? "", role: user.role, extraPermissions: user.extraPermissions, departments: user.departments, faculties: user.faculties }
+      : { email: "", name: "", role: "FINANCE_OFFICER", extraPermissions: [], departments: [], faculties: [] },
   });
   const role = useWatch({ control: form.control, name: "role" });
   const m = useMutation({
@@ -74,7 +76,8 @@ export function UserDialog({ user, open, onOpenChange }: { user?: User; open: bo
         name: v.name,
         role: v.role,
         extraPermissions: v.extraPermissions as Permission[],
-        departments: v.role === "HEAD_OF_DEPARTMENT" ? parseDepartments(v.departments) : [],
+        departments: v.role === "HEAD_OF_DEPARTMENT" ? v.departments : [],
+        faculties: v.role === "DEAN" ? v.faculties : [],
       };
       return user
         ? call(api.PATCH("/v1/admin/users/{id}", { params: { path: { id: user.id } }, body })).then((u) => ({ kind: "updated" as const, u }))
@@ -128,9 +131,28 @@ export function UserDialog({ user, open, onOpenChange }: { user?: User; open: bo
         />
       </FormField>
       {role === "HEAD_OF_DEPARTMENT" && (
-        <FormField label="Departments" htmlFor="u-depts" error={e.departments?.message} hint="Comma-separated, e.g. COMPUTING, NURSING">
-          <Input id="u-depts" className="font-mono uppercase" {...form.register("departments")} />
-        </FormField>
+        <div className="space-y-1.5">
+          <div className="text-sm font-medium">Departments</div>
+          <p className="text-xs text-muted-foreground">They see these departments&apos; payments and reports only.</p>
+          <Controller
+            control={form.control}
+            name="departments"
+            render={({ field }) => <DepartmentMultiSelect value={field.value} onChange={field.onChange} invalid={!!e.departments} />}
+          />
+          {e.departments && <p className="text-xs text-destructive">{e.departments.message}</p>}
+        </div>
+      )}
+      {role === "DEAN" && (
+        <div className="space-y-1.5">
+          <div className="text-sm font-medium">Faculties</div>
+          <p className="text-xs text-muted-foreground">They see every department in these faculties, including ones added later.</p>
+          <Controller
+            control={form.control}
+            name="faculties"
+            render={({ field }) => <FacultyMultiSelect value={field.value} onChange={field.onChange} invalid={!!e.faculties} />}
+          />
+          {e.faculties && <p className="text-xs text-destructive">{e.faculties.message}</p>}
+        </div>
       )}
       <fieldset className="space-y-1.5">
         <legend className="text-sm font-medium">Extra permissions</legend>
@@ -214,6 +236,19 @@ export function EditButton({ user }: { user: User }) {
   );
 }
 
+/** A dean's faculties or a head of department's departments, by name. */
+export function UserScope({ user }: { user: User }) {
+  const { departments, faculties } = useAcademics();
+  const names =
+    user.role === "DEAN"
+      ? user.faculties.map((c) => faculties.get(c)?.name ?? c)
+      : user.role === "HEAD_OF_DEPARTMENT"
+        ? user.departments.map((c) => departmentLabel(c, departments))
+        : [];
+  if (!names.length) return <span className="text-muted-foreground">—</span>;
+  return <span className="block max-w-64 truncate text-xs" title={names.join(", ")}>{names.join(", ")}</span>;
+}
+
 export function userState(u: User): "Active" | "Invited · not signed in" | "Deactivated" {
   return !u.active ? "Deactivated" : u.authUserId === null ? "Invited · not signed in" : "Active";
 }
@@ -239,7 +274,7 @@ const columns = [
     ),
   }),
   col.accessor("role", { header: "Role", cell: (c) => <Badge variant="secondary" className="font-mono text-[11px]">{c.getValue().replace(/_/g, " ")}</Badge> }),
-  col.accessor((u) => u.departments.join(", "), { id: "departments", header: "Departments", cell: (c) => c.getValue() || <span className="text-muted-foreground">—</span> }),
+  col.accessor((u) => [...u.faculties, ...u.departments].join(", "), { id: "scope", header: "Scope", cell: (c) => <UserScope user={c.row.original} /> }),
   col.accessor((u) => u.extraPermissions.join(", "), {
     id: "extra",
     header: "Extra permissions",

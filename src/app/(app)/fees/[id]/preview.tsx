@@ -5,6 +5,7 @@ import { CheckCircle2, Search, XCircle } from "lucide-react";
 import { useState } from "react";
 import { api, call } from "@/api/client";
 import { qk } from "@/api/keys";
+import { DepartmentName } from "@/components/academics";
 import { Money } from "@/components/format";
 import { ErrorState, Field, Fields, LoadingBlock } from "@/components/states";
 import { Button } from "@/components/ui/button";
@@ -90,7 +91,9 @@ export function Preview({ feeId, defaultKind }: { feeId: string; defaultKind: Ki
                 <Money minor={q.data.minInstalment} />
               </Field>
               <Field label="Program">{q.data.payer.programCode}</Field>
-              <Field label="Department">{q.data.payer.department ?? "—"}</Field>
+              <Field label="Department">
+                <DepartmentName code={q.data.payer.department} />
+              </Field>
               <Field label="Level">{q.data.payer.level ?? "—"}</Field>
               <Field label="Residency">{q.data.payer.residency.toLowerCase()}</Field>
               <Field label="Intake">{q.data.payer.intake ?? "—"}</Field>

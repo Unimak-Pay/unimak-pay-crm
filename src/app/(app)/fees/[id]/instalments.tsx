@@ -6,12 +6,12 @@ import { useState } from "react";
 import { api, call } from "@/api/client";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
+import { DepartmentName, DepartmentSelect, departmentLabel, useAcademics } from "@/components/academics";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DateTime, Money } from "@/components/format";
 import { ServerError } from "@/components/form-dialog";
 import { MoneyInput, toMajorInput } from "@/components/money-input";
 import { GatedButton } from "@/components/permission";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatSle, formatSleOrDash, parseSleInput } from "@/lib/money";
@@ -20,42 +20,42 @@ type Rule = components["schemas"]["InstalmentRule"];
 
 export function Instalments({ fee }: { fee: components["schemas"]["FeeDetail"] }) {
   const qc = useQueryClient();
-  const [program, setProgram] = useState("");
+  const { departments } = useAcademics();
+  const [department, setDepartment] = useState("");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Rule | null>(null);
   const invalidate = () => void qc.invalidateQueries({ queryKey: qk.fee(fee.id) });
 
   const set = useMutation({
-    mutationFn: (v: { programCode: string; minInstalment: string }) =>
+    mutationFn: (v: { department: string; minInstalment: string }) =>
       call(
-        api.PUT("/v1/admin/fees/{id}/instalment-rules/{programCode}", {
-          params: { path: { id: fee.id, programCode: v.programCode } },
+        api.PUT("/v1/admin/fees/{id}/instalment-rules/{department}", {
+          params: { path: { id: fee.id, department: v.department } },
           body: { minInstalment: v.minInstalment },
         }),
       ),
     meta: { inlineError: true },
     onSuccess: () => {
       invalidate();
-      setProgram("");
+      setDepartment("");
       setAmount("");
     },
   });
   const del = useMutation({
     mutationFn: (r: Rule) =>
-      call(api.DELETE("/v1/admin/fees/{id}/instalment-rules/{programCode}", { params: { path: { id: fee.id, programCode: r.programCode } } })),
+      call(api.DELETE("/v1/admin/fees/{id}/instalment-rules/{department}", { params: { path: { id: fee.id, department: r.department } } })),
     meta: { inlineError: true },
     onSuccess: invalidate,
   });
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    const code = program.trim().toUpperCase();
-    if (!/^[A-Z0-9-]{2,20}$/.test(code)) return setError("Enter a program code like BSC-CS");
+    if (!department) return setError("Choose a department");
     const a = parseSleInput(amount);
     if (!a.ok) return setError(a.error);
     setError(null);
-    set.mutate({ programCode: code, minInstalment: a.minor });
+    set.mutate({ department, minInstalment: a.minor });
   }
 
   return (
@@ -64,17 +64,17 @@ export function Instalments({ fee }: { fee: components["schemas"]["FeeDetail"] }
         {fee.allowInstalments ? (
           <>
             Instalments are allowed. Fee default minimum: <strong>{formatSleOrDash(fee.defaultMinInstalment)}</strong>
-            {fee.defaultMinInstalment ? "" : " (none: any amount)"}. A program rule below overrides the default.
+            {fee.defaultMinInstalment ? "" : " (none: any amount)"}. A department minimum below overrides the default for that department&apos;s students and applicants.
           </>
         ) : (
-          <>Instalments are off for this fee (edit the fee to allow them). Program rules only apply while they are allowed.</>
+          <>Instalments are off for this fee (edit the fee to allow them). Department minimums only apply while they are allowed.</>
         )}
       </p>
       <div className="overflow-x-auto rounded-md border">
         <Table className="text-[13px]">
           <TableHeader>
             <TableRow>
-              <TableHead>Program</TableHead>
+              <TableHead>Department</TableHead>
               <TableHead className="text-right">Minimum instalment</TableHead>
               <TableHead>Updated</TableHead>
               <TableHead className="w-24" />
@@ -84,13 +84,15 @@ export function Instalments({ fee }: { fee: components["schemas"]["FeeDetail"] }
             {fee.instalmentRules.length === 0 && (
               <TableRow className="hover:bg-transparent">
                 <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
-                  No program rules: every program uses the fee default.
+                  No department minimums: every department uses the fee default.
                 </TableCell>
               </TableRow>
             )}
             {fee.instalmentRules.map((r) => (
               <TableRow key={r.id}>
-                <TableCell className="font-mono">{r.programCode}</TableCell>
+                <TableCell>
+                  <DepartmentName code={r.department} />
+                </TableCell>
                 <TableCell className="text-right">
                   <Money minor={r.minInstalment} />
                 </TableCell>
@@ -102,15 +104,15 @@ export function Instalments({ fee }: { fee: components["schemas"]["FeeDetail"] }
                     op="adminSetInstalment"
                     size="icon-sm"
                     variant="ghost"
-                    aria-label={`Change ${r.programCode}`}
+                    aria-label={`Change ${departmentLabel(r.department, departments)}`}
                     onClick={() => {
-                      setProgram(r.programCode);
+                      setDepartment(r.department);
                       setAmount(toMajorInput(r.minInstalment));
                     }}
                   >
                     <Pencil aria-hidden />
                   </GatedButton>
-                  <GatedButton op="adminDeleteInstalment" size="icon-sm" variant="ghost" aria-label={`Remove ${r.programCode}`} onClick={() => (del.reset(), setDeleting(r))}>
+                  <GatedButton op="adminDeleteInstalment" size="icon-sm" variant="ghost" aria-label={`Remove ${departmentLabel(r.department, departments)}`} onClick={() => (del.reset(), setDeleting(r))}>
                     <Trash2 aria-hidden />
                   </GatedButton>
                 </TableCell>
@@ -121,10 +123,10 @@ export function Instalments({ fee }: { fee: components["schemas"]["FeeDetail"] }
       </div>
       <form onSubmit={submit} className="flex flex-wrap items-end gap-2" noValidate>
         <div className="space-y-1">
-          <Label htmlFor="inst-program" className="text-xs">
-            Program code
+          <Label htmlFor="inst-department" className="text-xs">
+            Department
           </Label>
-          <Input id="inst-program" value={program} onChange={(e) => setProgram(e.target.value)} placeholder="BSC-CS" className="h-8 w-36 font-mono uppercase" />
+          <DepartmentSelect id="inst-department" value={department} onChange={setDepartment} className="w-56" />
         </div>
         <div className="space-y-1">
           <Label htmlFor="inst-amount" className="text-xs">
@@ -142,14 +144,14 @@ export function Instalments({ fee }: { fee: components["schemas"]["FeeDetail"] }
       <ConfirmDialog
         open={!!deleting}
         onOpenChange={(o) => !o && setDeleting(null)}
-        title={`Remove the ${deleting?.programCode} minimum?`}
+        title={`Remove the ${deleting ? departmentLabel(deleting.department, departments) : ""} minimum?`}
         confirmLabel="Remove"
         destructive
         onConfirm={() => del.mutateAsync(deleting!)}
       >
         {deleting && (
           <p>
-            {deleting.programCode} students will use the fee default ({formatSleOrDash(fee.defaultMinInstalment)}) instead of{" "}
+            {departmentLabel(deleting.department, departments)} students and applicants will use the fee default ({formatSleOrDash(fee.defaultMinInstalment)}) instead of{" "}
             {formatSle(deleting.minInstalment)}.
           </p>
         )}

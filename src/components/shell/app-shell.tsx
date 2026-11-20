@@ -7,6 +7,7 @@ import { useTheme } from "next-themes";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/auth/auth-provider";
 import { useIdleSignOut } from "@/auth/idle";
+import { useNeedsReview, useScopeNames } from "@/components/academics";
 import { useCanOp } from "@/components/permission";
 import { ErrorState, LoadingBlock } from "@/components/states";
 import { Badge } from "@/components/ui/badge";
@@ -21,7 +22,18 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { APP_NAME, AppIcon, NAV, activeHref } from "./nav";
+import { ACADEMICS_HREF, APP_NAME, AppIcon, NAV, activeHref } from "./nav";
+
+function NeedsReviewBadge() {
+  const q = useNeedsReview();
+  const n = q.data?.length ?? 0;
+  if (!n) return null;
+  return (
+    <Badge variant="secondary" className="ml-auto h-5 min-w-5 justify-center bg-amber-100 px-1.5 text-[11px] text-amber-900 dark:bg-amber-900/40 dark:text-amber-200" aria-label={`${n} department${n === 1 ? "" : "s"} need review`}>
+      {n}
+    </Badge>
+  );
+}
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
@@ -48,6 +60,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
               >
                 <item.icon className="size-4 shrink-0" aria-hidden />
                 {item.label}
+                {item.href === ACADEMICS_HREF && <NeedsReviewBadge />}
               </Link>
             ))}
           </div>
@@ -87,6 +100,18 @@ function ThemeMenuItems() {
   );
 }
 
+/** Heads of department and deans: whose payments they see, by name. */
+function ScopeLabel({ departments, faculties }: { departments: string[]; faculties: string[] }) {
+  const names = useScopeNames(departments, faculties);
+  const text = [names.faculties.join(", "), names.departments.join(", ") || "No departments"].filter(Boolean).join(" · ");
+  return (
+    <div className="hidden min-w-0 items-center gap-1 sm:flex" title={`You see payments for these departments only: ${text}`} data-testid="scope">
+      <Building2 className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="truncate text-xs text-muted-foreground">{text}</span>
+    </div>
+  );
+}
+
 function Header() {
   const { me, signOut } = useAuth();
   const [open, setOpen] = useState(false);
@@ -109,12 +134,7 @@ function Header() {
         <span className="font-semibold">{APP_NAME}</span>
       </div>
       <div className="ml-auto flex min-w-0 items-center gap-2">
-        {me.departmentScoped && (
-          <div className="hidden min-w-0 items-center gap-1 sm:flex" title="You see payments for these departments only">
-            <Building2 className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-            <span className="truncate text-xs text-muted-foreground">{me.departments.join(", ") || "No departments"}</span>
-          </div>
-        )}
+        {me.departmentScoped && <ScopeLabel departments={me.departments} faculties={me.faculties} />}
         <Badge variant="secondary" className="hidden font-mono text-[11px] sm:inline-flex">
           {me.role.replace(/_/g, " ")}
         </Badge>
