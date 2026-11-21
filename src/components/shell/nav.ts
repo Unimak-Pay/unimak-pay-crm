@@ -9,8 +9,10 @@ import {
   Layers,
   type LucideIcon,
   Receipt,
+  RefreshCw,
   Scale,
   Tags,
+  UserX,
   Users,
   Wallet,
 } from "lucide-react";
@@ -34,6 +36,13 @@ export const NAV: NavGroup[] = [
       { href: "/fees", label: "Fees", icon: BadgeDollarSign, op: "adminFees" },
       { href: "/fees/types", label: "Fee types", icon: Tags, op: "adminFeeTypes" },
       { href: "/academics", label: "Faculties & departments", icon: GraduationCap, op: "adminListFaculties" },
+    ],
+  },
+  {
+    label: "Portal sync",
+    items: [
+      { href: "/portal/needs-review", label: "Needs review", icon: UserX, op: "adminPayersNeedsReview" },
+      { href: "/portal/events", label: "Portal events", icon: RefreshCw, op: "adminPortalEvents" },
     ],
   },
   {

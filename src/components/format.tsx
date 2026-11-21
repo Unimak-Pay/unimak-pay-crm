@@ -43,9 +43,9 @@ export function Day({ day }: { day: string | null | undefined }) {
   );
 }
 
-const GREEN = new Set(["COMPLETED", "SENT", "PROCESSED", "ACTIVE", "RESOLVED", "AUTO_RESOLVED", "PAID"]);
-const AMBER = new Set(["PENDING", "INITIATED", "SUBMITTED", "PROCESSING", "REQUESTED", "RUNNING", "RECEIVED", "DRAFT", "OPEN"]);
-const RED = new Set(["FAILED", "DEAD", "UNMATCHED"]);
+const GREEN = new Set(["COMPLETED", "SENT", "PROCESSED", "ACTIVE", "RESOLVED", "AUTO_RESOLVED", "PAID", "APPLIED"]);
+const AMBER = new Set(["PENDING", "INITIATED", "SUBMITTED", "PROCESSING", "REQUESTED", "RUNNING", "RECEIVED", "DRAFT", "OPEN", "SUSPENDED"]);
+const RED = new Set(["FAILED", "DEAD", "UNMATCHED", "REJECTED"]);
 // everything else (EXPIRED, CLOSED, IGNORED, …) is grey
 
 const STATUS_CLASS = {

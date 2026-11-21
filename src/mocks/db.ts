@@ -43,7 +43,7 @@ const ALL_PERMS: S["Permission"][] = [
   "fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export",
   "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "accounts.manage", "payouts.read",
   "payouts.manage", "transfers.read", "transfers.retry", "reconciliation.read", "reconciliation.manage", "outbox.read",
-  "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage", "academics.manage",
+  "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage", "academics.manage", "portal.read",
 ];
 /**
  * Mirrors the backend's role bundles (fixtures only; the app reads `me.permissions`). Commission
@@ -54,7 +54,7 @@ export const ROLE_PERMISSIONS: Record<S["AdminRole"], S["Permission"][]> = {
   BURSAR: [
     "fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export",
     "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "payouts.read",
-    "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "reports.read",
+    "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "portal.read", "reports.read",
   ],
   FINANCE_OFFICER: [
     "payers.read", "payments.read", "payments.export", "receipts.resend", "accounts.read", "payouts.read",
@@ -394,7 +394,10 @@ export function createDb() {
   const tuition = fees.find((f) => f.name === "Tuition 2026/27")!;
   instalmentRules.push({ id: uuid(7), feeId: tuition.id, department: "NURSING", level: 4, minInstalment: "120000", updatedBy: users[1].id, updatedAt: iso(NOW - 10 * DAY) });
 
-  return { faculties, departments, users, feeTypes, accounts, fees, rateRules, eligibilityRules, instalmentRules, payments, transfers, ledger, payouts, outbox, runs, items, webhookEvents, audit, banks, obligations };
+  const needsReview = seedNeedsReview(fees);
+  const portalEvents = seedPortalEvents();
+
+  return { faculties, departments, users, feeTypes, accounts, fees, rateRules, eligibilityRules, instalmentRules, payments, transfers, ledger, payouts, outbox, runs, items, webhookEvents, audit, banks, obligations, needsReview, portalEvents };
 }
 
 /** A payer's profile as the backend matches it against rules. */
@@ -477,5 +480,61 @@ function seedObligations(fees: S["Fee"][], feeTypes: S["FeeType"][], rateRules: 
   add("DEPT", 11, CS);
   add("DEPT", 12, CS);
   add("DEPT", 13, ECON);
+  return out;
+}
+
+/** Students the portal marked SUSPENDED / WITHDRAWN / GRADUATED who still owe something, newest status first. */
+function seedNeedsReview(fees: S["Fee"][]): S["NeedsReviewPayer"][] {
+  const r = rng(11);
+  const pick = <T,>(a: readonly T[]) => a[Math.floor(r() * a.length)];
+  const tuition = fees.find((f) => f.name === "Tuition 2026/27")!;
+  const levy = fees.find((f) => f.name === "Department levy 2026/27")!;
+  const lastYear = fees.find((f) => f.name === "Tuition 2025/26")!;
+  const rows: [string, number, S["NeedsReviewPayer"]["enrolmentStatus"], { fee: S["Fee"]; amount: string; balance: string }[]][] = [
+    ["COMPUTING", 2, "SUSPENDED", [{ fee: tuition, amount: "450000", balance: "300000" }]],
+    ["COMPUTING", 4, "GRADUATED", [{ fee: lastYear, amount: "450000", balance: "50000" }, { fee: levy, amount: "30000", balance: "30000" }]],
+    ["INFO-TECH", 1, "WITHDRAWN", [{ fee: tuition, amount: "450000", balance: "450000" }]],
+    ["ECONOMICS", 3, "SUSPENDED", [{ fee: tuition, amount: "450000", balance: "125050" }]],
+    ["NURSING", 2, "WITHDRAWN", [{ fee: tuition, amount: "520000", balance: "520000" }]],
+    ["NURSING", 4, "GRADUATED", [{ fee: lastYear, amount: "520000", balance: "20000" }]],
+    ["LAW", 1, "SUSPENDED", [{ fee: tuition, amount: "450000", balance: "450000" }]],
+    ["COMPUTING", 3, "WITHDRAWN", [{ fee: tuition, amount: "450000", balance: "150000" }]],
+  ];
+  return rows.map(([department, level, enrolmentStatus, obs], i) => {
+    const obligations = obs.map((o) => ({ id: uuid(21), feeName: o.fee.name, period: o.fee.period, amount: o.amount, balance: o.balance }));
+    return {
+      id: uuid(22), ref: `UNI-2024-${String(700 + i).padStart(4, "0")}`, fullName: `${pick(FIRST)} ${pick(LAST)}`, department, level, enrolmentStatus,
+      statusSince: iso(NOW - (i * 3 + 1) * DAY), obligations,
+      totalBalance: obligations.reduce((sum, o) => sum + BigInt(o.balance), 0n).toString(),
+    };
+  });
+}
+
+/**
+ * What the portal pushed, newest first. Times are relative to the real clock (not NOW) so the
+ * "last update from the portal" badge reads "5 min ago": the newest event is APPLIED 5 minutes ago.
+ */
+function seedPortalEvents(): S["PortalEvent"][] {
+  const r = rng(13);
+  const pick = <T,>(a: readonly T[]) => a[Math.floor(r() * a.length)];
+  const start = Date.now() - 5 * 60_000;
+  const out: S["PortalEvent"][] = [];
+  for (let i = 0; i < 70; i++) {
+    const student = i % 3 !== 2;
+    const ref = student ? `UNI-2025-${String(100 + (i % 40)).padStart(4, "0")}` : `APP-2026-${String(2000 + i).padStart(4, "0")}`;
+    const result: S["PortalEventResult"] = i === 0 ? "APPLIED" : i % 11 === 4 ? "REJECTED" : i % 7 === 3 ? "STALE" : "APPLIED";
+    const [programCode, department] = pick(PROGRAMS);
+    const receivedMs = start - i * 37 * 60_000;
+    const updatedAt = iso(receivedMs - 20_000);
+    const phone = result === "REJECTED" && i % 2 === 0 ? "076100001" : `+2327610${String(i).padStart(4, "0")}`;
+    const data = student
+      ? { studentId: ref, fullName: `${pick(FIRST)} ${pick(LAST)}`, phone, programCode, department, level: 1 + (i % 4), finalYear: i % 4 === 3, residency: "LOCAL", intake: "2025-SEP", enrolmentStatus: i % 13 === 5 ? "SUSPENDED" : "ACTIVE", updatedAt }
+      : { applicationRef: ref, fullName: `${pick(FIRST)} ${pick(LAST)}`, phone, programCode, department, intake: "2026-SEP", residency: "LOCAL", status: "APPLIED", updatedAt };
+    out.push({
+      id: `evt-${String(5000 - i)}`, type: student ? "student.upserted" : "applicant.upserted", ref, result,
+      error: result !== "REJECTED" ? null : phone.startsWith("+") ? "department must be a known department code" : "phone must match ^\\+\\d{8,15}$",
+      data, occurredAt: iso(receivedMs - 15_000), receivedAt: iso(receivedMs),
+    });
+  }
   return out;
 }

@@ -41,6 +41,8 @@ export const OPERATIONS = {
   adminListWebhookEvents: { method: "get", path: "/v1/admin/reconciliation/webhook-events", permission: "reconciliation.read" },
   adminMe: { method: "get", path: "/v1/admin/me", permission: null },
   adminOutbox: { method: "get", path: "/v1/admin/outbox", permission: "outbox.read" },
+  adminPayersNeedsReview: { method: "get", path: "/v1/admin/payers/needs-review", permission: "payers.read" },
+  adminPortalEvents: { method: "get", path: "/v1/admin/portal-events", permission: "portal.read" },
   adminPreview: { method: "get", path: "/v1/admin/fees/{id}/preview", permission: "fees.read" },
   adminPreviewReprice: { method: "get", path: "/v1/admin/fees/{id}/reprice", permission: "fees.manage" },
   adminProvisionAccounts: { method: "post", path: "/v1/admin/financial-accounts/provision", permission: "accounts.manage" },

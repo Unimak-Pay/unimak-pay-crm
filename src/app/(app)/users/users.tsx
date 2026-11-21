@@ -33,7 +33,7 @@ type Permission = components["schemas"]["Permission"];
 
 const ROLE_HELP: Record<Role, string> = {
   SUPER_ADMIN: "Everything, incl. users, payouts and account provisioning. 2FA required.",
-  BURSAR: "Fee setup, instalments, payments + reconcile, reconciliation, retries; reads accounts and payouts. 2FA required.",
+  BURSAR: "Fee setup, instalments, payments + reconcile, reconciliation, retries, portal events; reads accounts and payouts. 2FA required.",
   FINANCE_OFFICER: "Reads payments, accounts, payouts, reconciliation.",
   HEAD_OF_DEPARTMENT: "Reads fees and their departments' payments.",
   DEAN: "Reads fees and the payments of every department in their faculties.",

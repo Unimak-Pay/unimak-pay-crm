@@ -62,6 +62,12 @@ tags:
       Faculties → departments. Department codes are what the portal sends for a payer and what fee rules,
       minimum instalments and heads of department use, so codes never change; nothing is deleted (deactivate).
       A department the portal sends that isn't listed is added with `needsReview: true` (payments never wait for it).
+  - name: Portal
+    description: |
+      Called by the university portal: student and applicant changes as signed batches of events,
+      and a count check. Contract and rules: docs/portal-events.md.
+  - name: Admin · Portal sync
+    description: What the portal sent, and students who are no longer active but still owe something.
   - name: Monime
     description: Called by Monime (webhook, USSD flow exchange).
   - name: Public
@@ -394,6 +400,73 @@ paths:
         '400': { description: Malformed payload }
         '401': { description: Missing or bad signature }
 
+  # ── Portal ──────────────────────────────────────────────────────────────────
+  /v1/portal/events:
+    post:
+      operationId: portalPostEvents
+      tags: [Portal]
+      summary: Student and applicant changes (batch of 1-500 events)
+      description: |
+        Each event carries the full current record (`applicant.upserted` or `student.upserted`).
+        Per event: `APPLIED` (stored; missing obligations created), `DUPLICATE` (id seen before),
+        `STALE` (we hold a version with the same or newer `updatedAt`) or `REJECTED` (invalid record:
+        fix it and send with a new id). Retrying a batch with the same ids is always safe.
+        Body up to 1 MB. Students who aren't ACTIVE get no new charges.
+      security: [{ portalSignature: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [events]
+              properties:
+                events: { type: array, minItems: 1, maxItems: 500, items: { $ref: '#/components/schemas/PortalEventIn' } }
+      responses:
+        '200':
+          description: A result per event, in the order sent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, result]
+                      properties:
+                        id: { type: string }
+                        result: { type: string, enum: [APPLIED, DUPLICATE, STALE, REJECTED] }
+                        error: { type: object, properties: { code: { const: VALIDATION }, message: { type: string } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { description: Body over 1 MB }
+        '503': { description: PORTAL_EVENTS_SECRET is not configured }
+
+  /v1/portal/summary:
+    get:
+      operationId: portalGetSummary
+      tags: [Portal]
+      summary: Our counts, for the portal to compare with its own
+      security: [{ portalSignature: [] }]
+      responses:
+        '200':
+          description: Counts by department (and level / status)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asOf, applicants, students, lastEventAt]
+                properties:
+                  asOf: { type: string, format: date-time }
+                  applicants: { type: array, items: { type: object, properties: { department: { type: [string, 'null'] }, status: { type: [string, 'null'] }, count: { type: integer } } } }
+                  students: { type: array, items: { type: object, properties: { department: { type: [string, 'null'] }, level: { type: [integer, 'null'] }, enrolmentStatus: { type: [string, 'null'] }, count: { type: integer } } } }
+                  lastEventAt: { type: [string, 'null'], format: date-time }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { description: PORTAL_EVENTS_SECRET is not configured }
+
   /v1/ussd/exchange/{token}:
     get:
       operationId: ussdHealth
@@ -593,6 +666,65 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/admin/portal-events:
+    get:
+      operationId: adminPortalEvents
+      tags: [Admin · Portal sync]
+      summary: Events the portal sent, newest first
+      description: Kept 90 days. `lastAppliedAt` is when the last event was applied (sync health).
+      x-permission: portal.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: cursor, in: query, description: 'Last event id of the previous page', schema: { type: string } }
+        - { name: type, in: query, schema: { type: string, enum: [applicant.upserted, student.upserted] } }
+        - { name: result, in: query, schema: { type: string, enum: [APPLIED, STALE, REJECTED] } }
+        - { name: ref, in: query, description: 'studentId or applicationRef', schema: { type: string } }
+      responses:
+        '200':
+          description: Page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor, lastAppliedAt]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/PortalEvent' } }
+                  nextCursor: { type: [string, 'null'] }
+                  lastAppliedAt: { type: [string, 'null'], format: date-time }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/payers/needs-review:
+    get:
+      operationId: adminPayersNeedsReview
+      tags: [Admin · Portal sync]
+      summary: Students no longer active who still owe something
+      description: |
+        Suspended, withdrawn or graduated students (per the portal) with open obligations. They get no
+        new charges; what they owe stays payable until a person decides. Heads of department and deans
+        see their departments only.
+      x-permission: payers.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string, format: uuid } }
+        - { name: department, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [SUSPENDED, WITHDRAWN, GRADUATED] } }
+      responses:
+        '200':
+          description: Page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/NeedsReviewPayer' } }
+                  nextCursor: { type: [string, 'null'] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /v1/admin/audit-log:
     get:
@@ -1712,6 +1844,15 @@ components:
       type: apiKey
       in: header
       name: Monime-Signature
+    portalSignature:
+      type: apiKey
+      in: header
+      name: X-Portal-Signature
+      description: |
+        Two headers (docs/portal-events.md A2):
+        - `X-Portal-Timestamp`: unix seconds (within 300 s of server time)
+        - `X-Portal-Signature`: `v1=` + hex `HMAC-SHA256(PORTAL_EVENTS_SECRET, "<timestamp>.<raw body>")`
+        The previous secret (`PORTAL_EVENTS_SECRET_PREVIOUS`) is also accepted during rotation.
     cronSecret:
       type: http
       scheme: bearer
@@ -1867,9 +2008,70 @@ components:
         kind: { type: string, enum: [applicant, student] }
         ref: { type: string }
         fullName: { type: string }
+    PortalEventIn:
+      type: object
+      description: One event (docs/portal-events.md A3-A4). `data` is the full current record.
+      required: [id, type, occurredAt, data]
+      properties:
+        id: { type: string, pattern: '^[A-Za-z0-9_.:-]{1,100}$', description: 'Unique per event; reuse it when retrying.' }
+        type: { type: string, enum: [applicant.upserted, student.upserted] }
+        occurredAt: { type: string, format: date-time }
+        data: { oneOf: [{ $ref: '#/components/schemas/PortalApplicantRecord' }, { $ref: '#/components/schemas/PortalStudentRecord' }] }
+    PortalApplicantRecord:
+      type: object
+      required: [applicationRef, fullName, phone, programCode, department, intake, residency, status, updatedAt]
+      properties:
+        applicationRef: { type: string, example: APP-2026-0001 }
+        fullName: { type: string }
+        phone: { type: string, pattern: '^\+\d{8,15}$', example: '+23276100001' }
+        programCode: { type: string, example: BSC-CS }
+        department: { type: string, example: COMPUTER-SCI }
+        intake: { type: string, example: 2026-SEP }
+        residency: { type: string, enum: [LOCAL, INTERNATIONAL] }
+        status: { type: string, enum: [APPLIED, ADMITTED, REJECTED, WITHDRAWN] }
+        updatedAt: { type: string, format: date-time, description: 'Must increase on every change; older versions are ignored.' }
+    PortalStudentRecord:
+      type: object
+      required: [studentId, fullName, phone, programCode, department, level, finalYear, residency, intake, enrolmentStatus, updatedAt]
+      properties:
+        studentId: { type: string, example: UNI-2026-0001 }
+        applicationRef: { type: [string, 'null'], description: 'The application this student came from.' }
+        fullName: { type: string }
+        phone: { type: string, pattern: '^\+\d{8,15}$' }
+        programCode: { type: string }
+        department: { type: string }
+        level: { type: integer, minimum: 1, maximum: 10 }
+        finalYear: { type: boolean }
+        residency: { type: string, enum: [LOCAL, INTERNATIONAL] }
+        intake: { type: string }
+        enrolmentStatus: { type: string, enum: [ACTIVE, SUSPENDED, WITHDRAWN, GRADUATED] }
+        updatedAt: { type: string, format: date-time }
+    NeedsReviewPayer:
+      type: object
+      required: [id, ref, fullName, department, level, enrolmentStatus, statusSince, obligations, totalBalance]
+      properties:
+        id: { type: string, format: uuid }
+        ref: { type: string }
+        fullName: { type: string }
+        department: { type: [string, 'null'] }
+        level: { type: [integer, 'null'] }
+        enrolmentStatus: { type: string, enum: [SUSPENDED, WITHDRAWN, GRADUATED] }
+        statusSince: { type: [string, 'null'], format: date-time, description: "The portal's updatedAt of the record that set the status" }
+        obligations:
+          type: array
+          items:
+            type: object
+            required: [id, feeName, period, amount, balance]
+            properties:
+              id: { type: string, format: uuid }
+              feeName: { type: string }
+              period: { type: string }
+              amount: { type: string, description: 'SLE minor units' }
+              balance: { type: string, description: 'SLE minor units' }
+        totalBalance: { type: string, description: 'SLE minor units' }
     Permission:
       type: string
-      enum: [fees.read, fees.manage, instalments.manage, payers.read, payers.adjust, payments.read, payments.export, payments.refund, payments.reconcile, receipts.resend, accounts.read, accounts.manage, payouts.read, payouts.manage, transfers.read, transfers.retry, reconciliation.read, reconciliation.manage, outbox.read, outbox.retry, reports.read, audit.read, users.manage, settings.manage, academics.manage]
+      enum: [fees.read, fees.manage, instalments.manage, payers.read, payers.adjust, payments.read, payments.export, payments.refund, payments.reconcile, receipts.resend, accounts.read, accounts.manage, payouts.read, payouts.manage, transfers.read, transfers.retry, reconciliation.read, reconciliation.manage, outbox.read, outbox.retry, reports.read, audit.read, users.manage, settings.manage, academics.manage, portal.read]
 
     CountAmount:
       type: object
@@ -2367,7 +2569,7 @@ components:
         createdAt: { type: string, format: date-time }
     InstalmentRule:
       type: object
-      description: Minimum instalment for one department's payers (overrides Fee.defaultMinInstalment).
+      description: Minimum instalment for one department's payers, optionally one level (overrides Fee.defaultMinInstalment).
       required: [ id, feeId, department, level, minInstalment, updatedBy, updatedAt ]
       properties:
         id: { type: string, format: uuid }
@@ -2456,6 +2658,19 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         completedAt: { type: [ string, "null" ], format: date-time }
+    PortalEvent:
+      type: object
+      description: Events the portal pushed to POST /v1/portal/events (docs/portal-events.md). Keyed by the portal's event id for idempotency; purged after 90 days (they hold names and phones).
+      required: [ id, type, ref, result, error, data, occurredAt, receivedAt ]
+      properties:
+        id: { type: string }
+        type: { type: string }
+        ref: { description: "applicationRef or studentId, when readable", type: [ string, "null" ] }
+        result: { $ref: "#/components/schemas/PortalEventResult" }
+        error: { type: [ string, "null" ] }
+        data: { description: JSON }
+        occurredAt: { type: [ string, "null" ], format: date-time }
+        receivedAt: { type: string, format: date-time }
     RateRule:
       type: object
       required: [ id, feeId, programCode, department, level, residency, intake, amount, createdAt ]
@@ -2582,6 +2797,9 @@ components:
     PayoutStatus:
       type: string
       enum: [ REQUESTED, SUBMITTED, PROCESSING, COMPLETED, FAILED ]
+    PortalEventResult:
+      type: string
+      enum: [ APPLIED, STALE, REJECTED ]
     ReconciliationItemStatus:
       type: string
       enum: [ OPEN, AUTO_RESOLVED, RESOLVED ]

@@ -34,6 +34,8 @@ export const qk = {
   faculties: ["academics", "faculties"] as const,
   departments: (f: object = {}) => ["academics", "departments", f] as const,
   academicsRoot: ["academics"] as const,
+  needsReview: (f: object = {}) => ["portal", "needs-review", f] as const,
+  portalEvents: (f: object = {}) => ["portal", "events", f] as const,
   users: ["users"] as const,
   user: (id: string) => ["users", id] as const,
   audit: (f: object = {}) => ["audit", f] as const,

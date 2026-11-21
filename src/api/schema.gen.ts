@@ -275,6 +275,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/portal/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Student and applicant changes (batch of 1-500 events)
+         * @description Each event carries the full current record (`applicant.upserted` or `student.upserted`).
+         *     Per event: `APPLIED` (stored; missing obligations created), `DUPLICATE` (id seen before),
+         *     `STALE` (we hold a version with the same or newer `updatedAt`) or `REJECTED` (invalid record:
+         *     fix it and send with a new id). Retrying a batch with the same ids is always safe.
+         *     Body up to 1 MB. Students who aren't ACTIVE get no new charges.
+         */
+        post: operations["portalPostEvents"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/portal/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Our counts, for the portal to compare with its own */
+        get: operations["portalGetSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/ussd/exchange/{token}": {
         parameters: {
             query?: never;
@@ -436,6 +477,48 @@ export interface paths {
          * @description You cannot deactivate yourself, and there is always at least one active super admin.
          */
         patch: operations["adminUpdateUser"];
+        trace?: never;
+    };
+    "/v1/admin/portal-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Events the portal sent, newest first
+         * @description Kept 90 days. `lastAppliedAt` is when the last event was applied (sync health).
+         */
+        get: operations["adminPortalEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/payers/needs-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Students no longer active who still owe something
+         * @description Suspended, withdrawn or graduated students (per the portal) with open obligations. They get no
+         *     new charges; what they owe stays payable until a person decides. Heads of department and deans
+         *     see their departments only.
+         */
+        get: operations["adminPayersNeedsReview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/v1/admin/audit-log": {
@@ -1415,8 +1498,86 @@ export interface components {
             ref: string;
             fullName: string;
         };
+        /** @description One event (docs/portal-events.md A3-A4). `data` is the full current record. */
+        PortalEventIn: {
+            /** @description Unique per event; reuse it when retrying. */
+            id: string;
+            /** @enum {string} */
+            type: "applicant.upserted" | "student.upserted";
+            /** Format: date-time */
+            occurredAt: string;
+            data: components["schemas"]["PortalApplicantRecord"] | components["schemas"]["PortalStudentRecord"];
+        };
+        PortalApplicantRecord: {
+            /** @example APP-2026-0001 */
+            applicationRef: string;
+            fullName: string;
+            /** @example +23276100001 */
+            phone: string;
+            /** @example BSC-CS */
+            programCode: string;
+            /** @example COMPUTER-SCI */
+            department: string;
+            /** @example 2026-SEP */
+            intake: string;
+            /** @enum {string} */
+            residency: "LOCAL" | "INTERNATIONAL";
+            /** @enum {string} */
+            status: "APPLIED" | "ADMITTED" | "REJECTED" | "WITHDRAWN";
+            /**
+             * Format: date-time
+             * @description Must increase on every change; older versions are ignored.
+             */
+            updatedAt: string;
+        };
+        PortalStudentRecord: {
+            /** @example UNI-2026-0001 */
+            studentId: string;
+            /** @description The application this student came from. */
+            applicationRef?: string | null;
+            fullName: string;
+            phone: string;
+            programCode: string;
+            department: string;
+            level: number;
+            finalYear: boolean;
+            /** @enum {string} */
+            residency: "LOCAL" | "INTERNATIONAL";
+            intake: string;
+            /** @enum {string} */
+            enrolmentStatus: "ACTIVE" | "SUSPENDED" | "WITHDRAWN" | "GRADUATED";
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        NeedsReviewPayer: {
+            /** Format: uuid */
+            id: string;
+            ref: string;
+            fullName: string;
+            department: string | null;
+            level: number | null;
+            /** @enum {string} */
+            enrolmentStatus: "SUSPENDED" | "WITHDRAWN" | "GRADUATED";
+            /**
+             * Format: date-time
+             * @description The portal's updatedAt of the record that set the status
+             */
+            statusSince: string | null;
+            obligations: {
+                /** Format: uuid */
+                id: string;
+                feeName: string;
+                period: string;
+                /** @description SLE minor units */
+                amount: string;
+                /** @description SLE minor units */
+                balance: string;
+            }[];
+            /** @description SLE minor units */
+            totalBalance: string;
+        };
         /** @enum {string} */
-        Permission: "fees.read" | "fees.manage" | "instalments.manage" | "payers.read" | "payers.adjust" | "payments.read" | "payments.export" | "payments.refund" | "payments.reconcile" | "receipts.resend" | "accounts.read" | "accounts.manage" | "payouts.read" | "payouts.manage" | "transfers.read" | "transfers.retry" | "reconciliation.read" | "reconciliation.manage" | "outbox.read" | "outbox.retry" | "reports.read" | "audit.read" | "users.manage" | "settings.manage" | "academics.manage";
+        Permission: "fees.read" | "fees.manage" | "instalments.manage" | "payers.read" | "payers.adjust" | "payments.read" | "payments.export" | "payments.refund" | "payments.reconcile" | "receipts.resend" | "accounts.read" | "accounts.manage" | "payouts.read" | "payouts.manage" | "transfers.read" | "transfers.retry" | "reconciliation.read" | "reconciliation.manage" | "outbox.read" | "outbox.retry" | "reports.read" | "audit.read" | "users.manage" | "settings.manage" | "academics.manage" | "portal.read";
         CountAmount: {
             count?: number;
             /** @description SLE minor units */
@@ -1927,7 +2088,7 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
         };
-        /** @description Minimum instalment for one department's payers (overrides Fee.defaultMinInstalment). */
+        /** @description Minimum instalment for one department's payers, optionally one level (overrides Fee.defaultMinInstalment). */
         InstalmentRule: {
             /** Format: uuid */
             id: string;
@@ -2053,6 +2214,21 @@ export interface components {
             updatedAt: string;
             /** Format: date-time */
             completedAt: string | null;
+        };
+        /** @description Events the portal pushed to POST /v1/portal/events (docs/portal-events.md). Keyed by the portal's event id for idempotency; purged after 90 days (they hold names and phones). */
+        PortalEvent: {
+            id: string;
+            type: string;
+            /** @description applicationRef or studentId, when readable */
+            ref: string | null;
+            result: components["schemas"]["PortalEventResult"];
+            error: string | null;
+            /** @description JSON */
+            data: unknown;
+            /** Format: date-time */
+            occurredAt: string | null;
+            /** Format: date-time */
+            receivedAt: string;
         };
         RateRule: {
             /** Format: uuid */
@@ -2202,6 +2378,8 @@ export interface components {
         PaymentStatus: "INITIATED" | "PENDING" | "COMPLETED" | "FAILED" | "EXPIRED";
         /** @enum {string} */
         PayoutStatus: "REQUESTED" | "SUBMITTED" | "PROCESSING" | "COMPLETED" | "FAILED";
+        /** @enum {string} */
+        PortalEventResult: "APPLIED" | "STALE" | "REJECTED";
         /** @enum {string} */
         ReconciliationItemStatus: "OPEN" | "AUTO_RESOLVED" | "RESOLVED";
         /** @enum {string} */
@@ -2812,6 +2990,103 @@ export interface operations {
             };
         };
     };
+    portalPostEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    events: components["schemas"]["PortalEventIn"][];
+                };
+            };
+        };
+        responses: {
+            /** @description A result per event, in the order sent */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        results: {
+                            id: string;
+                            /** @enum {string} */
+                            result: "APPLIED" | "DUPLICATE" | "STALE" | "REJECTED";
+                            error?: {
+                                /** @constant */
+                                code?: "VALIDATION";
+                                message?: string;
+                            };
+                        }[];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description Body over 1 MB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description PORTAL_EVENTS_SECRET is not configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    portalGetSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Counts by department (and level / status) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: date-time */
+                        asOf: string;
+                        applicants: {
+                            department?: string | null;
+                            status?: string | null;
+                            count?: number;
+                        }[];
+                        students: {
+                            department?: string | null;
+                            level?: number | null;
+                            enrolmentStatus?: string | null;
+                            count?: number;
+                        }[];
+                        /** Format: date-time */
+                        lastEventAt: string | null;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description PORTAL_EVENTS_SECRET is not configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     ussdHealth: {
         parameters: {
             query?: never;
@@ -3141,6 +3416,71 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    adminPortalEvents: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Last event id of the previous page */
+                cursor?: string;
+                type?: "applicant.upserted" | "student.upserted";
+                result?: "APPLIED" | "STALE" | "REJECTED";
+                /** @description studentId or applicationRef */
+                ref?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["PortalEvent"][];
+                        nextCursor: string | null;
+                        /** Format: date-time */
+                        lastAppliedAt: string | null;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminPayersNeedsReview: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+                department?: string;
+                status?: "SUSPENDED" | "WITHDRAWN" | "GRADUATED";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["NeedsReviewPayer"][];
+                        nextCursor: string | null;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     adminAuditLog: {
@@ -4848,6 +5188,10 @@ type ReadonlyArray<T> = [
 ] extends [
     unknown[]
 ] ? Readonly<Exclude<T, undefined>> : Readonly<Exclude<T, undefined>[]>;
+export const pathsV1PortalEventsPostResponses200ContentApplicationJsonResultsResultValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/portal/events"]["post"]["responses"]["200"]["content"]["application/json"]["results"]["result"]> = ["APPLIED", "DUPLICATE", "STALE", "REJECTED"];
+export const pathsV1AdminPortalEventsGetParametersQueryTypeValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/portal-events"]["get"]["parameters"]["query"]["type"]> = ["applicant.upserted", "student.upserted"];
+export const pathsV1AdminPortalEventsGetParametersQueryResultValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/portal-events"]["get"]["parameters"]["query"]["result"]> = ["APPLIED", "STALE", "REJECTED"];
+export const pathsV1AdminPayersNeedsReviewGetParametersQueryStatusValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/payers/needs-review"]["get"]["parameters"]["query"]["status"]> = ["SUSPENDED", "WITHDRAWN", "GRADUATED"];
 export const pathsV1AdminFeeTypesPostRequestBodyContentApplicationJsonPayerKindValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/fee-types"]["post"]["requestBody"]["content"]["application/json"]["payerKind"]> = ["APPLICANT", "STUDENT"];
 export const pathsV1AdminFeeTypesPostRequestBodyContentApplicationJsonRecurrenceValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/fee-types"]["post"]["requestBody"]["content"]["application/json"]["recurrence"]> = ["ONCE", "PER_YEAR"];
 export const pathsV1AdminFeesIdPreviewGetParametersQueryKindValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/fees/{id}/preview"]["get"]["parameters"]["query"]["kind"]> = ["applicant", "student"];
@@ -4855,7 +5199,13 @@ export const pathsDevMonimeSimulateWebhookPostRequestBodyContentApplicationJsonO
 export const dotPayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DotPayer"]["kind"]> = ["applicant", "student"];
 export const repriceReportSkippedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RepriceReport"]["skipped"]["reason"]> = ["PAID", "HAS_PAYMENTS", "PAYMENT_IN_PROGRESS", "NOT_ELIGIBLE", "NO_RATE_RULE", "AMBIGUOUS_RATE_RULE"];
 export const repricePayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RepricePayer"]["kind"]> = ["applicant", "student"];
-export const permissionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Permission"]> = ["fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export", "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "accounts.manage", "payouts.read", "payouts.manage", "transfers.read", "transfers.retry", "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage", "academics.manage"];
+export const portalEventInTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PortalEventIn"]["type"]> = ["applicant.upserted", "student.upserted"];
+export const portalApplicantRecordResidencyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PortalApplicantRecord"]["residency"]> = ["LOCAL", "INTERNATIONAL"];
+export const portalApplicantRecordStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PortalApplicantRecord"]["status"]> = ["APPLIED", "ADMITTED", "REJECTED", "WITHDRAWN"];
+export const portalStudentRecordResidencyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PortalStudentRecord"]["residency"]> = ["LOCAL", "INTERNATIONAL"];
+export const portalStudentRecordEnrolmentStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PortalStudentRecord"]["enrolmentStatus"]> = ["ACTIVE", "SUSPENDED", "WITHDRAWN", "GRADUATED"];
+export const needsReviewPayerEnrolmentStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["NeedsReviewPayer"]["enrolmentStatus"]> = ["SUSPENDED", "WITHDRAWN", "GRADUATED"];
+export const permissionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Permission"]> = ["fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export", "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "accounts.manage", "payouts.read", "payouts.manage", "transfers.read", "transfers.retry", "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage", "academics.manage", "portal.read"];
 export const payer_payerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Payer"]["kind"]> = ["applicant", "student"];
 export const obligationStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Obligation"]["status"]> = ["OPEN", "PAID"];
 export const paymentStatusViewPayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PaymentStatusView"]["payer"]["kind"]> = ["applicant", "student"];
@@ -4872,6 +5222,7 @@ export const outboxStatusValues: ReadonlyArray<FlattenedDeepRequired<components>
 export const payerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayerKind"]> = ["APPLICANT", "STUDENT"];
 export const paymentStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PaymentStatus"]> = ["INITIATED", "PENDING", "COMPLETED", "FAILED", "EXPIRED"];
 export const payoutStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayoutStatus"]> = ["REQUESTED", "SUBMITTED", "PROCESSING", "COMPLETED", "FAILED"];
+export const portalEventResultValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PortalEventResult"]> = ["APPLIED", "STALE", "REJECTED"];
 export const reconciliationItemStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReconciliationItemStatus"]> = ["OPEN", "AUTO_RESOLVED", "RESOLVED"];
 export const reconciliationRunStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReconciliationRunStatus"]> = ["RUNNING", "COMPLETED", "FAILED"];
 export const recurrenceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Recurrence"]> = ["ONCE", "PER_YEAR"];

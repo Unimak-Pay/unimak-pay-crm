@@ -7,11 +7,12 @@ export type Page<T> = { items: T[]; nextCursor: string | null };
 
 /**
  * Cursor pagination (`?limit=&cursor=`, newest first) as one flat row list plus
- * "load more". The query key must include every filter.
+ * "load more". The query key must include every filter. `firstPage` keeps any extra
+ * fields the endpoint returns beside `items` (e.g. `lastAppliedAt`).
  */
-export function useCursorList<T>(
+export function useCursorList<P extends Page<unknown>>(
   queryKey: QueryKey,
-  fetchPage: (cursor: string | undefined) => Promise<Page<T>>,
+  fetchPage: (cursor: string | undefined) => Promise<P>,
   opts: { enabled?: boolean; refetchInterval?: number | false } = {},
 ) {
   const q = useInfiniteQuery({
@@ -22,7 +23,7 @@ export function useCursorList<T>(
     enabled: opts.enabled ?? true,
     refetchInterval: opts.refetchInterval,
   });
-  const rows = useMemo(() => q.data?.pages.flatMap((p) => p.items), [q.data]);
+  const rows = useMemo(() => q.data?.pages.flatMap((p) => p.items as P["items"][number][]), [q.data]);
   return {
     rows,
     isLoading: q.isPending && q.fetchStatus !== "idle",
@@ -32,5 +33,6 @@ export function useCursorList<T>(
     loadingMore: q.isFetchingNextPage,
     loadMore: () => void q.fetchNextPage(),
     isFetching: q.isFetching,
+    firstPage: q.data?.pages[0],
   };
 }

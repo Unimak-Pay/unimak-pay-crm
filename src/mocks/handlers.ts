@@ -67,12 +67,15 @@ function route(id: OperationId, resolver: (ctx: Ctx) => Response | Promise<Respo
   });
 }
 
-function page<T extends { id: string }>(rows: T[], url: URL) {
+function pageOf<T extends { id: string }>(rows: T[], url: URL) {
   const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 50));
   const cursor = url.searchParams.get("cursor");
   const start = cursor ? rows.findIndex((r) => r.id === cursor) + 1 : 0;
   const items = rows.slice(start, start + limit);
-  return HttpResponse.json({ items, nextCursor: start + limit < rows.length ? (items.at(-1)?.id ?? null) : null });
+  return { items, nextCursor: start + limit < rows.length ? (items.at(-1)?.id ?? null) : null };
+}
+function page<T extends { id: string }>(rows: T[], url: URL) {
+  return HttpResponse.json(pageOf(rows, url));
 }
 
 function sorted<T extends { id: string; createdAt: string; amount: string }>(rows: T[], url: URL): T[] {
@@ -1004,6 +1007,27 @@ export const apiHandlers = [
     Object.assign(t, { status: "SUBMITTED", attempt: t.attempt + 1, failureCode: null, failureMessage: null, updatedAt: now() });
     audit(me, "transfer.retry", "Transfer", t.id, before, t);
     return HttpResponse.json(t);
+  }),
+  // ── portal sync ──
+  route("adminPayersNeedsReview", ({ url, me }) => {
+    const department = url.searchParams.get("department");
+    const status = url.searchParams.get("status");
+    if (status && !["SUSPENDED", "WITHDRAWN", "GRADUATED"].includes(status)) return invalid("status must be one of the following values: SUSPENDED, WITHDRAWN, GRADUATED");
+    const rows = db.needsReview.filter(
+      (p) =>
+        (!department || p.department === department) &&
+        (!status || p.enrolmentStatus === status) &&
+        (!me.departmentScoped || me.departments.includes(p.department ?? "")),
+    );
+    return page(rows, url);
+  }),
+  route("adminPortalEvents", ({ url }) => {
+    const type = url.searchParams.get("type");
+    const result = url.searchParams.get("result");
+    const ref = url.searchParams.get("ref");
+    const rows = db.portalEvents.filter((e) => (!type || e.type === type) && (!result || e.result === result) && (!ref || e.ref === ref));
+    const lastAppliedAt = db.portalEvents.find((e) => e.result === "APPLIED")?.receivedAt ?? null;
+    return HttpResponse.json({ ...pageOf(rows, url), lastAppliedAt });
   }),
   route("adminOutbox", ({ url, me }) => {
     const status = url.searchParams.get("status");
