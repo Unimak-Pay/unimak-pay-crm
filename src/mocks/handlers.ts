@@ -6,6 +6,7 @@
 import { delay, http, HttpResponse } from "msw";
 import { OPERATIONS, type OperationId, type Permission } from "@/api/permissions.gen";
 import type { components } from "@/api/schema.gen";
+import { createAnalytics, parseFilters } from "./analytics";
 import { createDb, mockNow, ROLE_PERMISSIONS, uuid, type Db } from "./db";
 import { decodeMockJwt } from "./supabase";
 
@@ -19,6 +20,7 @@ export function resetMockDb() {
 
 const MFA_ROLES: S["AdminRole"][] = ["SUPER_ADMIN", "BURSAR"];
 const now = () => new Date(Math.max(Date.now(), mockNow())).toISOString();
+const analytics = createAnalytics(() => db, now);
 
 function fail(status: number, code: string, message: string, details: Record<string, unknown> = {}) {
   return HttpResponse.json({ error: { code, message, details } }, { status });
@@ -644,7 +646,7 @@ export const apiHandlers = [
   }),
   route("adminListPayments", ({ url, me }) => page(sorted(filterPayments(url, me), url).map(listPayment), url)),
   route("adminGetPayment", ({ params, me }) => {
-    const p = db.payments.find((x) => x.id === params.id);
+    const p = db.payments.find((x) => x.id === params.id) ?? db.roster.payments.find((x) => x.id === params.id);
     if (!p || (me.departmentScoped && !me.departments.includes(p.payer.department ?? ""))) return fail(404, "NOT_FOUND", "Payment not found");
     return HttpResponse.json(withNames({ ...p, commissionTransfer: me.permissions.includes("transfers.read") ? p.commissionTransfer : null }));
   }),
@@ -1020,6 +1022,30 @@ export const apiHandlers = [
         (!me.departmentScoped || me.departments.includes(p.department ?? "")),
     );
     return page(rows, url);
+  }),
+  // ── students (export.csv and needs-review before /:id) ──
+  route("adminReportsOutstanding", ({ url, me }) => {
+    const f = parseFilters(url);
+    return Array.isArray(f) ? invalid(...f) : HttpResponse.json(analytics.outstanding(f, me));
+  }),
+  route("adminExportPayers", ({ url, me }) => {
+    if (!me.permissions.includes("payers.read")) return fail(403, "FORBIDDEN", "Missing permission payers.read");
+    const f = parseFilters(url);
+    if (Array.isArray(f)) return invalid(...f);
+    audit(me, "payers.export", "Payer", "export", null, { filters: Object.fromEntries(url.searchParams) });
+    return new HttpResponse(analytics.csv(f, me), {
+      headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="unimak-payers-${now().slice(0, 10)}.csv"` },
+    });
+  }),
+  route("adminListPayers", ({ url, me }) => {
+    const f = parseFilters(url);
+    if (Array.isArray(f)) return invalid(...f);
+    const page = analytics.list(f, me, url);
+    return typeof page === "string" ? fail(400, "VALIDATION", page) : HttpResponse.json(page);
+  }),
+  route("adminGetPayer", ({ params, me }) => {
+    const p = analytics.detail(params.id, me);
+    return p ? HttpResponse.json(p) : fail(404, "NOT_FOUND", "Payer not found");
   }),
   route("adminPortalEvents", ({ url }) => {
     const type = url.searchParams.get("type");

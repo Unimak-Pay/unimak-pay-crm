@@ -396,8 +396,9 @@ export function createDb() {
 
   const needsReview = seedNeedsReview(fees);
   const portalEvents = seedPortalEvents();
+  const roster = seedRoster(fees, feeTypes, rateRules);
 
-  return { faculties, departments, users, feeTypes, accounts, fees, rateRules, eligibilityRules, instalmentRules, payments, transfers, ledger, payouts, outbox, runs, items, webhookEvents, audit, banks, obligations, needsReview, portalEvents };
+  return { faculties, departments, users, feeTypes, accounts, fees, rateRules, eligibilityRules, instalmentRules, payments, transfers, ledger, payouts, outbox, runs, items, webhookEvents, audit, banks, obligations, needsReview, portalEvents, roster };
 }
 
 /** A payer's profile as the backend matches it against rules. */
@@ -537,4 +538,187 @@ function seedPortalEvents(): S["PortalEvent"][] {
     });
   }
   return out;
+}
+
+type PD = S["PayerDetail"];
+/** A payer's record; department/faculty names are filled in by the handlers from the current departments. */
+export type RosterPayer = PD["payer"];
+export type RosterObligation = Omit<PD["obligations"][number], "fee" | "billed" | "collected" | "balance" | "overdue" | "minInstalment"> & {
+  payerId: string;
+  feeId: string;
+};
+export type RosterReceipt = PD["receipts"][number] & { payerId: string };
+export type Roster = { payers: RosterPayer[]; obligations: RosterObligation[]; receipts: RosterReceipt[]; payments: S["AdminPaymentDetail"][] };
+
+/**
+ * The student roster behind the outstanding report, the payer list and payer detail: about a
+ * hundred students across department × level with tuition (this year and, from level 2, last
+ * year's, due 2026-01-31 so unpaid balances are overdue), the Computer Science levy and
+ * matriculation for level 1; some suspended/withdrawn students; three active students with no
+ * obligations (NOT_BILLED); applicants with the application fee. Payments here are their own
+ * (`payments`), looked up by payment detail but not listed with the others.
+ */
+function seedRoster(fees: S["Fee"][], feeTypes: S["FeeType"][], rateRules: S["RateRule"][]): Roster {
+  const r = rng(17);
+  const pick = <T,>(a: readonly T[]) => a[Math.floor(r() * a.length)];
+  const fee = (name: string) => fees.find((f) => f.name === name)!;
+  const tuition = fee("Tuition 2026/27");
+  const lastYear = fee("Tuition 2025/26");
+  const levy = fee("Department levy 2026/27");
+  const matric = fee("Matriculation 2026/27");
+  const app = fee("Application fee 2026-SEP");
+  const typeOf = (f: S["Fee"]) => feeTypes.find((t) => t.id === f.feeTypeId)!;
+  // last year's (closed) tuition has no rules of its own: priced like this year's
+  const ruleFor = (f: S["Fee"], programCode: string, residency: S["Residency"]) => {
+    const priced = f === lastYear ? tuition : f;
+    const m = rateRules.filter((x) => x.feeId === priced.id && (!x.programCode || x.programCode === programCode) && (!x.residency || x.residency === residency));
+    return m.sort((a, b) => [b.programCode, b.residency].filter(Boolean).length - [a.programCode, a.residency].filter(Boolean).length)[0] ?? null;
+  };
+
+  const payers: RosterPayer[] = [];
+  const obligations: RosterObligation[] = [];
+  const receipts: RosterReceipt[] = [];
+  const payments: S["AdminPaymentDetail"][] = [];
+  let paymentNo = 0;
+
+  const phone = () => `+23276${String(100000 + Math.floor(r() * 899999))}`;
+  const payer = (o: Partial<RosterPayer> & Pick<RosterPayer, "kind" | "ref" | "programCode" | "department">): RosterPayer => {
+    const p: RosterPayer = {
+      id: uuid(23), fullName: `${pick(FIRST)} ${pick(LAST)}`, phone: phone(), departmentName: null, facultyCode: null, facultyName: null,
+      level: null, finalYear: null, residency: "LOCAL", intake: "2025-SEP", applicantStatus: null, enrolmentStatus: null, applicationRef: null,
+      portalUpdatedAt: iso(NOW - Math.floor(r() * 30) * DAY - 3_600_000), snapshotAt: iso(NOW - 90 * DAY), ...o,
+    };
+    payers.push(p);
+    return p;
+  };
+
+  /** One obligation: the charge, then `paid` (0..1 of the amount) in one or two completed payments, plus noise. */
+  const bill = (p: RosterPayer, f: S["Fee"], paid: number, o: { adjust?: string; refund?: boolean; failed?: boolean } = {}) => {
+    const ft = typeOf(f);
+    const rule = ruleFor(f, p.programCode, p.residency);
+    const amount = BigInt(rule?.amount ?? "0");
+    const created = Date.parse(f.createdAt) + Math.floor(r() * 5) * DAY;
+    const ob: RosterObligation = {
+      id: uuid(24), payerId: p.id, feeId: f.id, status: "OPEN", amount: amount.toString(), rateRuleId: f === lastYear ? null : (rule?.id ?? null), createdAt: iso(created),
+      entries: [{ id: uuid(25), type: "CHARGE", amount: amount.toString(), memo: null, paymentId: null, createdBy: "system", createdAt: iso(created) }],
+      payments: [],
+    };
+    let balance = amount;
+    if (o.adjust) {
+      balance += BigInt(o.adjust);
+      ob.entries.push({ id: uuid(25), type: "ADJUSTMENT", amount: o.adjust, memo: "Bursary award", paymentId: null, createdBy: "bursar@unimak.test", createdAt: iso(created + 2 * DAY) });
+    }
+    // round to whole leones, split in two when large
+    let toPay = paid >= 1 ? balance : (BigInt(Math.round(Number(balance) * paid)) / 100n) * 100n;
+    const parts = toPay > 200000n && r() < 0.6 ? [toPay / 2n, toPay - toPay / 2n] : toPay > 0n ? [toPay] : [];
+    const pay = (amt: bigint, at: number, status: S["PaymentStatus"]) => {
+      paymentNo++;
+      const id = uuid(26);
+      const completed = status === "COMPLETED";
+      const channel: S["Channel"] = r() < 0.65 ? "USSD" : "DOTS";
+      const receiptNumber = completed ? `UNIMAK-2026-${String(500000 + paymentNo)}` : null;
+      const entry = completed
+        ? { id: uuid(25), type: "PAYMENT" as const, amount: (-amt).toString(), memo: `Monime 3BMR${String(paymentNo).padStart(6, "0")}QX`, paymentId: id, createdBy: "system", createdAt: iso(at + 240_000) }
+        : null;
+      if (entry) ob.entries.push(entry);
+      const a = amt.toString();
+      const fee15 = ((amt * 15n) / 1000n).toString();
+      const fee10 = ((amt * 10n) / 1000n).toString();
+      payments.push({
+        id, obligationId: ob.id, amount: a, channel, clientId: channel === "DOTS" ? "dash-dots" : "ussd", idempotencyKey: `idem-${id.slice(-8)}`,
+        paymentRef: String(30_000_000 + paymentNo), payerPhone: p.phone, phoneAuthorized: false,
+        collectionMethod: channel === "USSD" ? "USSD_FLOW" : "PAYMENT_CODE", status, monimeRef: `pmc-${id.slice(-10)}`, ussdCode: null,
+        monimePaymentId: completed ? `spm-${id.slice(-10)}` : null, monimeOrderNumber: completed ? `3BMR${String(paymentNo).padStart(6, "0")}QX` : null,
+        pricingConfigId: uuid(12), monimeFee: fee15, platformFee: fee10, netAmount: (amt - BigInt(fee15) - BigInt(fee10)).toString(),
+        expiresAt: iso(at + 30 * 60_000), completedAt: completed ? iso(at + 240_000) : null,
+        failureReason: status === "FAILED" ? "Insufficient balance" : null, createdAt: iso(at), updatedAt: iso(at + 240_000),
+        feeTypeCode: ft.code, feeName: f.name,
+        payer: { kind: p.kind, ref: p.ref, fullName: p.fullName, programCode: p.programCode, department: p.department, departmentName: null, facultyCode: null, facultyName: null },
+        receiptNumber, ledgerEntry: entry ? { ...entry, obligationId: ob.id } : null, commissionTransfer: null,
+      });
+      ob.payments.unshift({
+        id, paymentRef: String(30_000_000 + paymentNo), amount: a, status, channel, collectionMethod: channel === "USSD" ? "USSD_FLOW" : "PAYMENT_CODE",
+        payerPhone: p.phone, createdAt: iso(at), completedAt: completed ? iso(at + 240_000) : null,
+        failureReason: status === "FAILED" ? "Insufficient balance" : null, receiptNumber,
+      });
+      if (receiptNumber) receipts.push({ id: uuid(27), number: receiptNumber, amount: a, issuedAt: iso(at + 245_000), obligationId: ob.id, paymentId: id, payerId: p.id });
+    };
+    let at = created + DAY;
+    if (o.failed) pay(toPay > 0n ? parts[0] : balance, at - 3_600_000, "FAILED");
+    for (const part of parts) {
+      at += Math.floor(1 + r() * 20) * DAY;
+      pay(part, Math.min(at, NOW - DAY), "COMPLETED");
+    }
+    balance -= toPay;
+    if (o.refund && toPay > 0n) {
+      const back = toPay < 50000n ? toPay : 50000n;
+      ob.entries.push({ id: uuid(25), type: "REFUND", amount: back.toString(), memo: "Paid twice: refunded", paymentId: ob.payments[0]?.id ?? null, createdBy: "bursar@unimak.test", createdAt: iso(Math.min(at + DAY, NOW - 3_600_000)) });
+      balance += back;
+      toPay -= back;
+    }
+    ob.status = balance <= 0n ? "PAID" : "OPEN";
+    obligations.push(ob);
+  };
+  /** how much of a fee a student has paid: in full, part, nothing */
+  const share = () => {
+    const x = r();
+    return x < 0.45 ? 1 : x < 0.75 ? 0.2 + r() * 0.6 : 0;
+  };
+
+  // [program, department, levels]: Mass Communication is new (levels 1–2 only)
+  const cohorts: [string, string, number[]][] = [
+    ["BSC-CS", "COMPUTING", [1, 2, 3, 4]],
+    ["BSC-IT", "INFO-TECH", [1, 2, 3, 4]],
+    ["BA-ECON", "ECONOMICS", [1, 2, 3, 4]],
+    ["BSC-NURS", "NURSING", [1, 2, 3, 4]],
+    ["LLB", "LAW", [1, 2, 3, 4]],
+    ["BA-MC", "MASS-COMM", [1, 2]],
+  ];
+  let n = 100;
+  for (const [programCode, department, levels] of cohorts) {
+    for (const level of levels) {
+      const count = 2 + Math.floor(r() * 4);
+      for (let i = 0; i < count; i++) {
+        const p = payer({
+          kind: "STUDENT", ref: `UNI-2025-${String(n++).padStart(4, "0")}`, programCode, department, level, finalYear: level === 4,
+          residency: r() < 0.1 ? "INTERNATIONAL" : "LOCAL", intake: `${2026 - level}-SEP`, enrolmentStatus: "ACTIVE",
+        });
+        bill(p, tuition, share(), { adjust: r() < 0.06 ? "-100000" : undefined, refund: r() < 0.03, failed: r() < 0.08 });
+        if (department === "COMPUTING") bill(p, levy, share());
+        if (level === 1) bill(p, matric, r() < 0.7 ? 1 : 0);
+        // last year's tuition: mostly settled; what isn't is overdue (due 2026-01-31)
+        if (level >= 2) bill(p, lastYear, r() < 0.75 ? 1 : 0.3 + r() * 0.5);
+      }
+    }
+  }
+  // the hundredth student came in from an application: linked both ways
+  const linkedApp = `APP-2025-${String(4100).padStart(4, "0")}`;
+  payers[0].applicationRef = linkedApp;
+
+  // active but nothing billed (usually a missing rate rule)
+  for (const [programCode, department, level] of [["BA-MC", "MASS-COMM", 3], ["BA-MC", "MASS-COMM", 3], ["LLB", "LAW", 2]] as const) {
+    payer({ kind: "STUDENT", ref: `UNI-2025-${String(n++).padStart(4, "0")}`, programCode, department, level, finalYear: false, enrolmentStatus: "ACTIVE" });
+  }
+  // not active: only counted with includeInactive (they're in Needs review)
+  for (const [programCode, department, level, enrolmentStatus] of [
+    ["BSC-CS", "COMPUTING", 2, "SUSPENDED"],
+    ["BSC-IT", "INFO-TECH", 3, "WITHDRAWN"],
+    ["BA-ECON", "ECONOMICS", 1, "SUSPENDED"],
+    ["BSC-NURS", "NURSING", 4, "GRADUATED"],
+    ["LLB", "LAW", 3, "WITHDRAWN"],
+  ] as const) {
+    const p = payer({ kind: "STUDENT", ref: `UNI-2025-${String(n++).padStart(4, "0")}`, programCode, department, level, finalYear: level === 4, enrolmentStatus });
+    bill(p, tuition, r() < 0.5 ? 0 : 0.4);
+  }
+
+  // applicants: the application fee, by status
+  payer({ kind: "APPLICANT", ref: linkedApp, programCode: payers[0].programCode, department: payers[0].department, intake: "2025-SEP", applicantStatus: "ADMITTED", fullName: payers[0].fullName, phone: payers[0].phone });
+  const statuses = ["APPLIED", "APPLIED", "APPLIED", "ADMITTED", "ADMITTED", "REJECTED", "WITHDRAWN"] as const;
+  for (let i = 0; i < 14; i++) {
+    const [programCode, department] = pick(PROGRAMS);
+    const status = statuses[i % statuses.length];
+    const p = payer({ kind: "APPLICANT", ref: `APP-2026-${String(3000 + i).padStart(4, "0")}`, programCode, department, intake: "2026-SEP", applicantStatus: status });
+    bill(p, app, status === "ADMITTED" || r() < 0.6 ? 1 : 0);
+  }
+  return { payers, obligations, receipts, payments };
 }

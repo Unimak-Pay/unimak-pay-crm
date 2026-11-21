@@ -138,3 +138,22 @@
 .dark {
   --viz-series-1: #3987e5;
 }
+/*
+ * Outstanding heat map: collection rate in five 20% bins, one hue (sequential blue from the
+ * validated reference ramp). Low collection sits near the surface in both modes; ink flips to
+ * white where the fill is dark enough (>= 4.5:1 for the small cell text).
+ */
+:root {
+  --heat-0: #cde2fb; --heat-ink-0: #0b1220;
+  --heat-1: #9ec5f4; --heat-ink-1: #0b1220;
+  --heat-2: #6da7ec; --heat-ink-2: #0b1220;
+  --heat-3: #256abf; --heat-ink-3: #ffffff;
+  --heat-4: #0d366b; --heat-ink-4: #ffffff;
+}
+.dark {
+  --heat-0: #0d366b; --heat-ink-0: #ffffff;
+  --heat-1: #184f95; --heat-ink-1: #ffffff;
+  --heat-2: #256abf; --heat-ink-2: #ffffff;
+  --heat-3: #6da7ec; --heat-ink-3: #0b1220;
+  --heat-4: #b7d3f6; --heat-ink-4: #0b1220;
+}

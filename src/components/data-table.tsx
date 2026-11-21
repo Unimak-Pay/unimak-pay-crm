@@ -46,6 +46,8 @@ type ServerSort = {
   onChange(value: string): void;
   /** Column ids the API can sort by, mapped to the API field. */
   columns: Record<string, string>;
+  /** Sent when sorting is cleared (default "-createdAt"). */
+  defaultValue?: string;
 };
 
 export type DataTableProps<T extends RowData> = {
@@ -117,7 +119,7 @@ export function DataTable<T extends RowData>({
       const next = typeof updater === "function" ? updater(serverSorting) : updater;
       const first = next[0];
       if (!first) {
-        serverSort.onChange("-createdAt");
+        serverSort.onChange(serverSort.defaultValue ?? "-createdAt");
         return;
       }
       const field = serverSort.columns[first.id];

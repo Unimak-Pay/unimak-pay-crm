@@ -521,6 +521,107 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/reports/outstanding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Billed, collected and outstanding by department × level
+         * @description Live from obligations and the ledger (docs/analytics.md). **billed** = charges + adjustments,
+         *     **collected** = payments net of refunds, **outstanding** = each obligation's positive balance.
+         *     A student is paid (nothing outstanding), part-paid or unpaid; **overdue** = outstanding on a fee
+         *     whose `dueDate` has passed.
+         *     - **grid** / **totals**: students with at least one obligation of the selected fees. Suspended,
+         *       withdrawn and graduated students are left out unless `includeInactive=true` (they're in Needs review).
+         *     - **byFee**: the same students, per fee. **applicants**: applicants by status (no level filter).
+         *     - **roster**: every active student in scope, and how many have no obligation at all (usually a
+         *       missing rate rule), whatever the fee filter.
+         *     - Heads of department and deans only see their departments (`filters.departments`).
+         */
+        get: operations["adminReportsOutstanding"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/payers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Students and applicants with what they've been billed, paid and still owe
+         * @description The list behind each cell of the outstanding report: pass the same filters plus `department`
+         *     and `level`. Without a fee filter every payer is listed, including those with nothing billed
+         *     (`standing: NOT_BILLED`); with one, only payers billed for it. `balance` = outstanding. Phones
+         *     are masked. Cursor paging: pass `nextCursor` back with the same `sort`. Heads of department and
+         *     deans only see their departments.
+         */
+        get: operations["adminListPayers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/payers/export.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the payer list as CSV
+         * @description Same filters and order as the list. Amounts in SLE (`1500.00`), phones masked. At most 50,000
+         *     rows (400 `VALIDATION` beyond that). Cells starting with `= + - @` are prefixed with `'`.
+         *     UTF-8 with BOM. Every export is audited (`payers.export`). Needs `payers.read` and `payments.export`.
+         *
+         *     Columns: kind, ref, full_name, phone_masked, program, department, department_name, faculty, level,
+         *     enrolment_status, applicant_status, obligations, billed_sle, collected_sle, balance_sle, standing,
+         *     overdue, overdue_sle, last_payment_at, payer_id.
+         */
+        get: operations["adminExportPayers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/payers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One payer's full picture
+         * @description The record (with the full phone), the linked applicant or student, each obligation with its fee,
+         *     balance, minimum next payment, ledger entries and payments, receipts, and the last 20 portal
+         *     events for this ref. 404 for a payer outside a head of department's or dean's departments.
+         */
+        get: operations["adminGetPayer"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/audit-log": {
         parameters: {
             query?: never;
@@ -1577,6 +1678,265 @@ export interface components {
             totalBalance: string;
         };
         /** @enum {string} */
+        EnrolmentStatus: "ACTIVE" | "SUSPENDED" | "WITHDRAWN" | "GRADUATED";
+        /**
+         * @description NOT_BILLED: no obligations selected; PAID: nothing outstanding; PART_PAID: something collected and outstanding; UNPAID: nothing collected.
+         * @enum {string}
+         */
+        Standing: "NOT_BILLED" | "PAID" | "PART_PAID" | "UNPAID";
+        OutstandingTotals: {
+            students: number;
+            /** @description SLE minor units */
+            billed: string;
+            /** @description SLE minor units */
+            collected: string;
+            /** @description SLE minor units */
+            outstanding: string;
+            paid: number;
+            partPaid: number;
+            unpaid: number;
+            /** @description Students with something overdue */
+            overdue: number;
+            /** @description SLE minor units */
+            overdueAmount: string;
+            /** @description collected ÷ billed, 0–1; null when nothing is billed */
+            collectionRate: number | null;
+        };
+        OutstandingReport: {
+            /** Format: date-time */
+            asOf: string;
+            filters: {
+                feeId: string | null;
+                feeType: string | null;
+                period: string | null;
+                faculty: string | null;
+                department: string | null;
+                level: number | null;
+                includeInactive: boolean;
+                /** @description A head of department's or dean's departments; null = all */
+                departments: string[] | null;
+            };
+            totals: components["schemas"]["OutstandingTotals"];
+            grid: (components["schemas"]["OutstandingTotals"] & {
+                department: string | null;
+                departmentName: string | null;
+                facultyCode: string | null;
+                facultyName: string | null;
+                level: number | null;
+            })[];
+            byFee: {
+                /** Format: uuid */
+                feeId: string;
+                feeName: string;
+                period: string;
+                feeTypeCode: string;
+                /** Format: date-time */
+                dueDate: string | null;
+                obligations: number;
+                /** @description SLE minor units */
+                billed: string;
+                /** @description SLE minor units */
+                collected: string;
+                /** @description SLE minor units */
+                outstanding: string;
+                collectionRate: number | null;
+            }[];
+            applicants: {
+                byStatus: {
+                    status: string | null;
+                    applicants: number;
+                    /** @description SLE minor units */
+                    billed: string;
+                    /** @description SLE minor units */
+                    collected: string;
+                    /** @description SLE minor units */
+                    outstanding: string;
+                    paid: number;
+                }[];
+            };
+            roster: {
+                activeStudents: number;
+                /** @description Active students with no obligation at all (usually a missing rate rule) */
+                withoutObligations: number;
+                /** Format: date-time */
+                lastPortalEventAt: string | null;
+            };
+        };
+        PayerListItem: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "STUDENT" | "APPLICANT";
+            ref: string;
+            fullName: string;
+            /** @example +232*****456 */
+            maskedPhone: string;
+            programCode: string;
+            department: string | null;
+            departmentName: string | null;
+            facultyCode: string | null;
+            level: number | null;
+            /** @enum {string|null} */
+            enrolmentStatus: "ACTIVE" | "SUSPENDED" | "WITHDRAWN" | "GRADUATED" | null;
+            applicantStatus: string | null;
+            /** @description Obligations counted (of the selected fees) */
+            obligations: number;
+            /** @description SLE minor units */
+            billed: string;
+            /** @description SLE minor units */
+            collected: string;
+            /** @description Outstanding, SLE minor units */
+            balance: string;
+            standing: components["schemas"]["Standing"];
+            overdue: boolean;
+            /** @description SLE minor units */
+            overdueAmount: string;
+            /** Format: date-time */
+            lastPaymentAt: string | null;
+        };
+        PayerDetail: {
+            payer: {
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                kind: "STUDENT" | "APPLICANT";
+                ref: string;
+                fullName: string;
+                /** @description Full number */
+                phone: string;
+                programCode: string;
+                department: string | null;
+                departmentName: string | null;
+                facultyCode: string | null;
+                facultyName: string | null;
+                level: number | null;
+                finalYear: boolean | null;
+                /** @enum {string} */
+                residency: "LOCAL" | "INTERNATIONAL";
+                intake: string;
+                applicantStatus: string | null;
+                /** @enum {string|null} */
+                enrolmentStatus: "ACTIVE" | "SUSPENDED" | "WITHDRAWN" | "GRADUATED" | null;
+                applicationRef: string | null;
+                /** Format: date-time */
+                portalUpdatedAt: string | null;
+                /** Format: date-time */
+                snapshotAt: string;
+            };
+            /** @description The application a student came from, or the student an applicant became. */
+            linked: {
+                applicant: {
+                    /** Format: uuid */
+                    id: string;
+                    ref: string;
+                } | null;
+                student: {
+                    /** Format: uuid */
+                    id: string;
+                    ref: string;
+                } | null;
+            };
+            totals: {
+                obligations: number;
+                /** @description SLE minor units */
+                billed: string;
+                /** @description SLE minor units */
+                collected: string;
+                /** @description SLE minor units */
+                outstanding: string;
+                standing: components["schemas"]["Standing"];
+                overdue: boolean;
+                collectionRate: number | null;
+            };
+            obligations: {
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                status: "OPEN" | "PAID";
+                /** @description SLE minor units, as priced */
+                amount: string;
+                /** Format: uuid */
+                rateRuleId: string | null;
+                /** Format: date-time */
+                createdAt: string;
+                fee: {
+                    /** Format: uuid */
+                    id: string;
+                    name: string;
+                    period: string;
+                    feeTypeCode: string;
+                    /** @enum {string} */
+                    status: "DRAFT" | "ACTIVE" | "CLOSED";
+                    /** Format: date-time */
+                    dueDate: string | null;
+                };
+                /** @description SLE minor units */
+                billed: string;
+                /** @description SLE minor units */
+                collected: string;
+                /** @description SLE minor units (negative = overpaid) */
+                balance: string;
+                overdue: boolean;
+                /** @description Smallest next payment the channels accept against the balance, SLE minor units */
+                minInstalment: string;
+                entries: {
+                    /** Format: uuid */
+                    id: string;
+                    /** @enum {string} */
+                    type: "CHARGE" | "PAYMENT" | "ADJUSTMENT" | "REFUND";
+                    /** @description Signed, SLE minor units */
+                    amount: string;
+                    memo: string | null;
+                    /** Format: uuid */
+                    paymentId: string | null;
+                    createdBy: string;
+                    /** Format: date-time */
+                    createdAt: string;
+                }[];
+                payments: {
+                    /** Format: uuid */
+                    id: string;
+                    paymentRef: string;
+                    /** @description SLE minor units */
+                    amount: string;
+                    status: components["schemas"]["PaymentStatus"];
+                    channel: components["schemas"]["Channel"];
+                    collectionMethod: string;
+                    payerPhone: string | null;
+                    /** Format: date-time */
+                    createdAt: string;
+                    /** Format: date-time */
+                    completedAt: string | null;
+                    failureReason: string | null;
+                    receiptNumber: string | null;
+                }[];
+            }[];
+            receipts: {
+                /** Format: uuid */
+                id: string;
+                number: string;
+                /** @description SLE minor units */
+                amount: string;
+                /** Format: date-time */
+                issuedAt: string;
+                /** Format: uuid */
+                obligationId: string;
+                /** Format: uuid */
+                paymentId: string;
+            }[];
+            portalEvents: {
+                id: string;
+                type: string;
+                /** @enum {string} */
+                result: "APPLIED" | "STALE" | "REJECTED";
+                error: string | null;
+                /** Format: date-time */
+                occurredAt: string | null;
+                /** Format: date-time */
+                receivedAt: string;
+            }[];
+        };
+        /** @enum {string} */
         Permission: "fees.read" | "fees.manage" | "instalments.manage" | "payers.read" | "payers.adjust" | "payments.read" | "payments.export" | "payments.refund" | "payments.reconcile" | "receipts.resend" | "accounts.read" | "accounts.manage" | "payouts.read" | "payouts.manage" | "transfers.read" | "transfers.retry" | "reconciliation.read" | "reconciliation.manage" | "outbox.read" | "outbox.retry" | "reports.read" | "audit.read" | "users.manage" | "settings.manage" | "academics.manage" | "portal.read";
         CountAmount: {
             count?: number;
@@ -2505,6 +2865,28 @@ export interface components {
         FacultyFilter: string;
         PayerKind: "applicant" | "student";
         PayerRef: string;
+        /** @description One fee. */
+        AnalyticsFeeId: string;
+        /**
+         * @description Fee type code.
+         * @example TUITION
+         */
+        AnalyticsFeeType: string;
+        /**
+         * @description Fee period.
+         * @example 2026/27
+         */
+        AnalyticsPeriod: string;
+        AnalyticsLevel: number;
+        /** @description Count suspended, withdrawn and graduated students too. */
+        AnalyticsIncludeInactive: boolean;
+        AnalyticsKind: "STUDENT" | "APPLICANT";
+        /** @description OVERDUE = outstanding on a fee past its due date. */
+        AnalyticsStanding: "NOT_BILLED" | "PAID" | "PART_PAID" | "UNPAID" | "OVERDUE";
+        AnalyticsEnrolmentStatus: components["schemas"]["EnrolmentStatus"];
+        /** @description Ref or name contains. */
+        AnalyticsSearch: string;
+        AnalyticsSort: "-balance" | "balance" | "name" | "ref";
         /** @description Student level 1-10. Omitted = every level of the department. */
         InstalmentLevel: number;
         /** @description Secret path token (USSD_EXCHANGE_PATH_TOKEN). */
@@ -3481,6 +3863,199 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    adminReportsOutstanding: {
+        parameters: {
+            query?: {
+                /** @description One fee. */
+                feeId?: components["parameters"]["AnalyticsFeeId"];
+                /**
+                 * @description Fee type code.
+                 * @example TUITION
+                 */
+                feeType?: components["parameters"]["AnalyticsFeeType"];
+                /**
+                 * @description Fee period.
+                 * @example 2026/27
+                 */
+                period?: components["parameters"]["AnalyticsPeriod"];
+                /**
+                 * @description Department code.
+                 * @example NURSING
+                 */
+                department?: components["parameters"]["DepartmentFilter"];
+                /**
+                 * @description Faculty code: its departments as they are now.
+                 * @example FAC-NURSING-AHS
+                 */
+                faculty?: components["parameters"]["FacultyFilter"];
+                level?: components["parameters"]["AnalyticsLevel"];
+                /** @description Count suspended, withdrawn and graduated students too. */
+                includeInactive?: components["parameters"]["AnalyticsIncludeInactive"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutstandingReport"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminListPayers: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description `nextCursor` from the previous page (same sort). */
+                cursor?: string;
+                sort?: components["parameters"]["AnalyticsSort"];
+                kind?: components["parameters"]["AnalyticsKind"];
+                /** @description OVERDUE = outstanding on a fee past its due date. */
+                standing?: components["parameters"]["AnalyticsStanding"];
+                enrolmentStatus?: components["parameters"]["AnalyticsEnrolmentStatus"];
+                /** @description Ref or name contains. */
+                q?: components["parameters"]["AnalyticsSearch"];
+                /** @description One fee. */
+                feeId?: components["parameters"]["AnalyticsFeeId"];
+                /**
+                 * @description Fee type code.
+                 * @example TUITION
+                 */
+                feeType?: components["parameters"]["AnalyticsFeeType"];
+                /**
+                 * @description Fee period.
+                 * @example 2026/27
+                 */
+                period?: components["parameters"]["AnalyticsPeriod"];
+                /**
+                 * @description Department code.
+                 * @example NURSING
+                 */
+                department?: components["parameters"]["DepartmentFilter"];
+                /**
+                 * @description Faculty code: its departments as they are now.
+                 * @example FAC-NURSING-AHS
+                 */
+                faculty?: components["parameters"]["FacultyFilter"];
+                level?: components["parameters"]["AnalyticsLevel"];
+                /** @description Count suspended, withdrawn and graduated students too. */
+                includeInactive?: components["parameters"]["AnalyticsIncludeInactive"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["PayerListItem"][];
+                        nextCursor: string | null;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminExportPayers: {
+        parameters: {
+            query?: {
+                sort?: components["parameters"]["AnalyticsSort"];
+                kind?: components["parameters"]["AnalyticsKind"];
+                /** @description OVERDUE = outstanding on a fee past its due date. */
+                standing?: components["parameters"]["AnalyticsStanding"];
+                enrolmentStatus?: components["parameters"]["AnalyticsEnrolmentStatus"];
+                /** @description Ref or name contains. */
+                q?: components["parameters"]["AnalyticsSearch"];
+                /** @description One fee. */
+                feeId?: components["parameters"]["AnalyticsFeeId"];
+                /**
+                 * @description Fee type code.
+                 * @example TUITION
+                 */
+                feeType?: components["parameters"]["AnalyticsFeeType"];
+                /**
+                 * @description Fee period.
+                 * @example 2026/27
+                 */
+                period?: components["parameters"]["AnalyticsPeriod"];
+                /**
+                 * @description Department code.
+                 * @example NURSING
+                 */
+                department?: components["parameters"]["DepartmentFilter"];
+                /**
+                 * @description Faculty code: its departments as they are now.
+                 * @example FAC-NURSING-AHS
+                 */
+                faculty?: components["parameters"]["FacultyFilter"];
+                level?: components["parameters"]["AnalyticsLevel"];
+                /** @description Count suspended, withdrawn and graduated students too. */
+                includeInactive?: components["parameters"]["AnalyticsIncludeInactive"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description CSV file (`Content-Disposition` attachment) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminGetPayer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Payer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayerDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     adminAuditLog: {
@@ -5205,6 +5780,15 @@ export const portalApplicantRecordStatusValues: ReadonlyArray<FlattenedDeepRequi
 export const portalStudentRecordResidencyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PortalStudentRecord"]["residency"]> = ["LOCAL", "INTERNATIONAL"];
 export const portalStudentRecordEnrolmentStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PortalStudentRecord"]["enrolmentStatus"]> = ["ACTIVE", "SUSPENDED", "WITHDRAWN", "GRADUATED"];
 export const needsReviewPayerEnrolmentStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["NeedsReviewPayer"]["enrolmentStatus"]> = ["SUSPENDED", "WITHDRAWN", "GRADUATED"];
+export const enrolmentStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EnrolmentStatus"]> = ["ACTIVE", "SUSPENDED", "WITHDRAWN", "GRADUATED"];
+export const standingValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Standing"]> = ["NOT_BILLED", "PAID", "PART_PAID", "UNPAID"];
+export const payerListItemKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayerListItem"]["kind"]> = ["STUDENT", "APPLICANT"];
+export const payerDetailPayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayerDetail"]["payer"]["kind"]> = ["STUDENT", "APPLICANT"];
+export const payerDetailPayerResidencyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayerDetail"]["payer"]["residency"]> = ["LOCAL", "INTERNATIONAL"];
+export const payerDetailObligationsStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayerDetail"]["obligations"]["status"]> = ["OPEN", "PAID"];
+export const payerDetailObligationsFeeStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayerDetail"]["obligations"]["fee"]["status"]> = ["DRAFT", "ACTIVE", "CLOSED"];
+export const payerDetailObligationsEntriesTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayerDetail"]["obligations"]["entries"]["type"]> = ["CHARGE", "PAYMENT", "ADJUSTMENT", "REFUND"];
+export const payerDetailPortalEventsResultValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayerDetail"]["portalEvents"]["result"]> = ["APPLIED", "STALE", "REJECTED"];
 export const permissionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Permission"]> = ["fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export", "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "accounts.manage", "payouts.read", "payouts.manage", "transfers.read", "transfers.retry", "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage", "academics.manage", "portal.read"];
 export const payer_payerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Payer"]["kind"]> = ["applicant", "student"];
 export const obligationStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Obligation"]["status"]> = ["OPEN", "PAID"];
@@ -5230,4 +5814,7 @@ export const residencyValues: ReadonlyArray<FlattenedDeepRequired<components>["s
 export const transferStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["TransferStatus"]> = ["PENDING", "SUBMITTED", "COMPLETED", "FAILED"];
 export const webhookEventStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["WebhookEventStatus"]> = ["RECEIVED", "PROCESSED", "IGNORED", "UNMATCHED", "FAILED"];
 export const componentsParametersPayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["parameters"]["PayerKind"]> = ["applicant", "student"];
+export const componentsParametersAnalyticsKindValues: ReadonlyArray<FlattenedDeepRequired<components>["parameters"]["AnalyticsKind"]> = ["STUDENT", "APPLICANT"];
+export const componentsParametersAnalyticsStandingValues: ReadonlyArray<FlattenedDeepRequired<components>["parameters"]["AnalyticsStanding"]> = ["NOT_BILLED", "PAID", "PART_PAID", "UNPAID", "OVERDUE"];
+export const componentsParametersAnalyticsSortValues: ReadonlyArray<FlattenedDeepRequired<components>["parameters"]["AnalyticsSort"]> = ["-balance", "balance", "name", "ref"];
 export const componentsParametersSortValues: ReadonlyArray<FlattenedDeepRequired<components>["parameters"]["Sort"]> = ["createdAt", "-createdAt", "amount", "-amount"];

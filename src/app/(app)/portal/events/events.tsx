@@ -41,7 +41,7 @@ const columns = [
 ];
 
 /** Re-renders every minute so "5 min ago" stays true. */
-function useNow(everyMs = 60_000) {
+export function useNow(everyMs = 60_000) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), everyMs);

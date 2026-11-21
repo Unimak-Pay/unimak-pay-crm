@@ -2,8 +2,10 @@ import {
   ArrowLeftRight,
   BadgeDollarSign,
   Banknote,
+  Contact,
   FileClock,
   GraduationCap,
+  Grid3x3,
   Inbox,
   LayoutDashboard,
   Layers,
@@ -39,8 +41,10 @@ export const NAV: NavGroup[] = [
     ],
   },
   {
-    label: "Portal sync",
+    label: "Students",
     items: [
+      { href: "/students/outstanding", label: "Outstanding", icon: Grid3x3, op: "adminReportsOutstanding" },
+      { href: "/students", label: "Students", icon: Contact, op: "adminListPayers" },
       { href: "/portal/needs-review", label: "Needs review", icon: UserX, op: "adminPayersNeedsReview" },
       { href: "/portal/events", label: "Portal events", icon: RefreshCw, op: "adminPortalEvents" },
     ],

@@ -111,6 +111,13 @@ on the backend, so the others show what an admin without commission transfers se
 inactive). `MASS-COMM` is one the portal "sent" that needs review, so the nav badge shows 1.
 `COMPUTING` is used by the head of department and an eligibility rule, so deactivating it gives a 409.
 
+**Students:** a roster of about 70 active students across department × level (Mass Communication
+levels 1–2 only) with this year's tuition, the Computer Science levy, matriculation for level 1 and,
+from level 2, last year's tuition (due 2026-01-31, so what's left of it is overdue). Three active
+students have nothing billed (the "check rate rules" warning), five inactive ones only count with
+"Include inactive students", and 15 applicants pay the application fee. `UNI-2025-0100` came from
+application `APP-2025-4100` and has portal events, receipts and payments that open in payment detail.
+
 **Email links:** use `token_hash=invite:<email>` or `recovery:<email>`, e.g.
 `/auth/accept-invite?token_hash=invite:pending@unimak.test&type=invite`. `token_hash=expired` is
 refused like a used link. **Invite outcomes** depend on the email: `+registered` gives
@@ -166,6 +173,11 @@ Never hand-write API types. If the UI needs something the spec doesn't have, it'
   grouped by faculty (`DepartmentSelect`, `DepartmentMultiSelect`), and codes are shown by name
   (`DepartmentName`, `useScopeNames`). The Needs review nav badge comes from
   `GET /v1/admin/departments?needsReview=true`.
+- **Students** `src/app/(app)/students/…`: the Outstanding heat map (`reports.read`) drills into the
+  students list (`payers.read`) through `drill.ts`, which also keeps the two pages' URL filters in
+  step. A cell keeps the report's filters and adds its department and level; a count adds `standing`.
+  Phones are masked in the list and the CSV (`payments.export` only); the detail page shows the full
+  number. The mock mirrors the backend's sums in `src/mocks/analytics.ts`.
 - **Commission transfers** need `transfers.read` (super admins unless granted). Without it the
   nav item, the payment's commission transfer, the reconciliation transfer sections and tiles, and
   the report's commission card are hidden. The API sends `null` for them.

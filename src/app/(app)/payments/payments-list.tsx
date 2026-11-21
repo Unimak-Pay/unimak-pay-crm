@@ -1,10 +1,7 @@
 "use client";
 
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { Download, Loader2 } from "lucide-react";
-import { toast } from "sonner";
-import { api, call, download } from "@/api/client";
-import { errorMessage } from "@/api/errors";
+import { useQuery } from "@tanstack/react-query";
+import { api, call } from "@/api/client";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
 import { channelValues, componentsParametersSortValues, paymentStatusValues } from "@/api/schema.gen";
@@ -13,7 +10,8 @@ import { AcademicFilters, useScopeNames } from "@/components/academics";
 import { columnsFor, DataTable, minorSortValue } from "@/components/data-table";
 import { DayRangeFilter, FilterBar, FilterSearch, FilterSelect } from "@/components/filters";
 import { CopyValue, DateTime, Money, StatusBadge } from "@/components/format";
-import { GatedButton, RequireOp, useCanOp } from "@/components/permission";
+import { ExportCsvButton } from "@/components/export-button";
+import { RequireOp, useCanOp } from "@/components/permission";
 import { PageHeader } from "@/components/states";
 import { useCursorList } from "@/hooks/use-cursor-list";
 import { compact, useUrlFilters } from "@/hooks/use-url-filters";
@@ -74,29 +72,6 @@ function filtersToQuery(v: Record<(typeof KEYS)[number], string>) {
   });
 }
 
-function ExportButton({ query }: { query: Record<string, string | undefined> }) {
-  const m = useMutation({
-    mutationFn: () => download("/v1/admin/payments/export.csv", query),
-    meta: { inlineError: true },
-    onSuccess: ({ blob, filename }) => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      toast.success(`Downloaded ${filename}`);
-    },
-    onError: (e) => toast.error(errorMessage(e)),
-  });
-  return (
-    <GatedButton op="adminExportPayments" variant="outline" size="sm" onClick={() => m.mutate()} disabled={m.isPending}>
-      {m.isPending ? <Loader2 className="animate-spin" aria-hidden /> : <Download aria-hidden />}
-      Export CSV
-    </GatedButton>
-  );
-}
-
 function List() {
   const me = useMe();
   const scope = useScopeNames(me.departments, me.faculties);
@@ -118,7 +93,7 @@ function List() {
             ? `Only ${scope.departments.join(", ") || "your departments"}. Newest first.`
             : "Every payment from USSD and Dash Dots. Newest first."
         }
-        actions={<ExportButton query={query} />}
+        actions={<ExportCsvButton op="adminExportPayments" path="/v1/admin/payments/export.csv" query={query} />}
       />
       <FilterBar onReset={reset} active={active}>
         <FilterSearch

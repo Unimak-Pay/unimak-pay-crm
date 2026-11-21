@@ -50,6 +50,8 @@ tags:
       `reference` = our payment id) is the only thing that marks it paid.
   - name: Admin · Reports
     description: Collection totals for the dashboard.
+  - name: Admin · Payers
+    description: Who owes what, by department and level, down to one student (docs/analytics.md).
   - name: Admin · Payments
   - name: Admin · Fee setup
     description: Fee types (each with its own Monime financial account), fees and their rules.
@@ -725,6 +727,138 @@ paths:
                   nextCursor: { type: [string, 'null'] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/reports/outstanding:
+    get:
+      operationId: adminReportsOutstanding
+      tags: [Admin · Reports]
+      summary: Billed, collected and outstanding by department × level
+      description: |
+        Live from obligations and the ledger (docs/analytics.md). **billed** = charges + adjustments,
+        **collected** = payments net of refunds, **outstanding** = each obligation's positive balance.
+        A student is paid (nothing outstanding), part-paid or unpaid; **overdue** = outstanding on a fee
+        whose `dueDate` has passed.
+        - **grid** / **totals**: students with at least one obligation of the selected fees. Suspended,
+          withdrawn and graduated students are left out unless `includeInactive=true` (they're in Needs review).
+        - **byFee**: the same students, per fee. **applicants**: applicants by status (no level filter).
+        - **roster**: every active student in scope, and how many have no obligation at all (usually a
+          missing rate rule), whatever the fee filter.
+        - Heads of department and deans only see their departments (`filters.departments`).
+      x-permission: reports.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AnalyticsFeeId'
+        - $ref: '#/components/parameters/AnalyticsFeeType'
+        - $ref: '#/components/parameters/AnalyticsPeriod'
+        - $ref: '#/components/parameters/DepartmentFilter'
+        - $ref: '#/components/parameters/FacultyFilter'
+        - $ref: '#/components/parameters/AnalyticsLevel'
+        - $ref: '#/components/parameters/AnalyticsIncludeInactive'
+      responses:
+        '200': { description: Report, content: { application/json: { schema: { $ref: '#/components/schemas/OutstandingReport' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/payers:
+    get:
+      operationId: adminListPayers
+      tags: [Admin · Payers]
+      summary: Students and applicants with what they've been billed, paid and still owe
+      description: |
+        The list behind each cell of the outstanding report: pass the same filters plus `department`
+        and `level`. Without a fee filter every payer is listed, including those with nothing billed
+        (`standing: NOT_BILLED`); with one, only payers billed for it. `balance` = outstanding. Phones
+        are masked. Cursor paging: pass `nextCursor` back with the same `sort`. Heads of department and
+        deans only see their departments.
+      x-permission: payers.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 400 }, description: '`nextCursor` from the previous page (same sort).' }
+        - $ref: '#/components/parameters/AnalyticsSort'
+        - $ref: '#/components/parameters/AnalyticsKind'
+        - $ref: '#/components/parameters/AnalyticsStanding'
+        - $ref: '#/components/parameters/AnalyticsEnrolmentStatus'
+        - $ref: '#/components/parameters/AnalyticsSearch'
+        - $ref: '#/components/parameters/AnalyticsFeeId'
+        - $ref: '#/components/parameters/AnalyticsFeeType'
+        - $ref: '#/components/parameters/AnalyticsPeriod'
+        - $ref: '#/components/parameters/DepartmentFilter'
+        - $ref: '#/components/parameters/FacultyFilter'
+        - $ref: '#/components/parameters/AnalyticsLevel'
+        - $ref: '#/components/parameters/AnalyticsIncludeInactive'
+      responses:
+        '200':
+          description: Page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/PayerListItem' } }
+                  nextCursor: { type: [string, 'null'] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/payers/export.csv:
+    get:
+      operationId: adminExportPayers
+      tags: [Admin · Payers]
+      summary: Download the payer list as CSV
+      description: |
+        Same filters and order as the list. Amounts in SLE (`1500.00`), phones masked. At most 50,000
+        rows (400 `VALIDATION` beyond that). Cells starting with `= + - @` are prefixed with `'`.
+        UTF-8 with BOM. Every export is audited (`payers.export`). Needs `payers.read` and `payments.export`.
+
+        Columns: kind, ref, full_name, phone_masked, program, department, department_name, faculty, level,
+        enrolment_status, applicant_status, obligations, billed_sle, collected_sle, balance_sle, standing,
+        overdue, overdue_sle, last_payment_at, payer_id.
+      x-permission: payments.export
+      security: [{ adminJwt: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AnalyticsSort'
+        - $ref: '#/components/parameters/AnalyticsKind'
+        - $ref: '#/components/parameters/AnalyticsStanding'
+        - $ref: '#/components/parameters/AnalyticsEnrolmentStatus'
+        - $ref: '#/components/parameters/AnalyticsSearch'
+        - $ref: '#/components/parameters/AnalyticsFeeId'
+        - $ref: '#/components/parameters/AnalyticsFeeType'
+        - $ref: '#/components/parameters/AnalyticsPeriod'
+        - $ref: '#/components/parameters/DepartmentFilter'
+        - $ref: '#/components/parameters/FacultyFilter'
+        - $ref: '#/components/parameters/AnalyticsLevel'
+        - $ref: '#/components/parameters/AnalyticsIncludeInactive'
+      responses:
+        '200':
+          description: CSV file (`Content-Disposition` attachment)
+          content:
+            text/csv: { schema: { type: string } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/admin/payers/{id}:
+    get:
+      operationId: adminGetPayer
+      tags: [Admin · Payers]
+      summary: One payer's full picture
+      description: |
+        The record (with the full phone), the linked applicant or student, each obligation with its fee,
+        balance, minimum next payment, ledger entries and payments, receipts, and the last 20 portal
+        events for this ref. 404 for a payer outside a head of department's or dean's departments.
+      x-permission: payers.read
+      security: [{ adminJwt: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Payer, content: { application/json: { schema: { $ref: '#/components/schemas/PayerDetail' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /v1/admin/audit-log:
     get:
@@ -1869,6 +2003,16 @@ components:
     FacultyFilter: { name: faculty, in: query, schema: { type: string, maxLength: 40 }, example: FAC-NURSING-AHS, description: 'Faculty code: its departments as they are now.' }
     PayerKind: { name: kind, in: path, required: true, schema: { type: string, enum: [applicant, student] } }
     PayerRef: { name: ref, in: path, required: true, schema: { type: string }, examples: { student: { value: UNI-2025-0002 }, applicant: { value: APP-2026-0001 } } }
+    AnalyticsFeeId: { name: feeId, in: query, schema: { type: string, format: uuid }, description: One fee. }
+    AnalyticsFeeType: { name: feeType, in: query, schema: { type: string, maxLength: 40 }, example: TUITION, description: Fee type code. }
+    AnalyticsPeriod: { name: period, in: query, schema: { type: string, maxLength: 20 }, example: 2026/27, description: Fee period. }
+    AnalyticsLevel: { name: level, in: query, schema: { type: integer, minimum: 1, maximum: 10 } }
+    AnalyticsIncludeInactive: { name: includeInactive, in: query, schema: { type: boolean, default: false }, description: 'Count suspended, withdrawn and graduated students too.' }
+    AnalyticsKind: { name: kind, in: query, schema: { type: string, enum: [STUDENT, APPLICANT] } }
+    AnalyticsStanding: { name: standing, in: query, schema: { type: string, enum: [NOT_BILLED, PAID, PART_PAID, UNPAID, OVERDUE] }, description: 'OVERDUE = outstanding on a fee past its due date.' }
+    AnalyticsEnrolmentStatus: { name: enrolmentStatus, in: query, schema: { $ref: '#/components/schemas/EnrolmentStatus' } }
+    AnalyticsSearch: { name: q, in: query, schema: { type: string, maxLength: 64 }, description: Ref or name contains. }
+    AnalyticsSort: { name: sort, in: query, schema: { type: string, enum: ['-balance', balance, name, ref], default: '-balance' } }
     InstalmentLevel: { name: level, in: query, required: false, description: 'Student level 1-10. Omitted = every level of the department.', schema: { type: integer, minimum: 1, maximum: 10 } }
     UssdToken: { name: token, in: path, required: true, schema: { type: string }, description: 'Secret path token (USSD_EXCHANGE_PATH_TOKEN).' }
     Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
@@ -2069,6 +2213,241 @@ components:
               amount: { type: string, description: 'SLE minor units' }
               balance: { type: string, description: 'SLE minor units' }
         totalBalance: { type: string, description: 'SLE minor units' }
+    EnrolmentStatus: { type: string, enum: [ACTIVE, SUSPENDED, WITHDRAWN, GRADUATED] }
+    Standing: { type: string, enum: [NOT_BILLED, PAID, PART_PAID, UNPAID], description: 'NOT_BILLED: no obligations selected; PAID: nothing outstanding; PART_PAID: something collected and outstanding; UNPAID: nothing collected.' }
+    OutstandingTotals:
+      type: object
+      required: [students, billed, collected, outstanding, paid, partPaid, unpaid, overdue, overdueAmount, collectionRate]
+      properties:
+        students: { type: integer }
+        billed: { type: string, description: 'SLE minor units' }
+        collected: { type: string, description: 'SLE minor units' }
+        outstanding: { type: string, description: 'SLE minor units' }
+        paid: { type: integer }
+        partPaid: { type: integer }
+        unpaid: { type: integer }
+        overdue: { type: integer, description: Students with something overdue }
+        overdueAmount: { type: string, description: 'SLE minor units' }
+        collectionRate: { type: [number, 'null'], description: 'collected ÷ billed, 0–1; null when nothing is billed' }
+    OutstandingReport:
+      type: object
+      required: [asOf, filters, totals, grid, byFee, applicants, roster]
+      properties:
+        asOf: { type: string, format: date-time }
+        filters:
+          type: object
+          required: [feeId, feeType, period, faculty, department, level, includeInactive, departments]
+          properties:
+            feeId: { type: [string, 'null'] }
+            feeType: { type: [string, 'null'] }
+            period: { type: [string, 'null'] }
+            faculty: { type: [string, 'null'] }
+            department: { type: [string, 'null'] }
+            level: { type: [integer, 'null'] }
+            includeInactive: { type: boolean }
+            departments: { type: [array, 'null'], items: { type: string }, description: "A head of department's or dean's departments; null = all" }
+        totals: { $ref: '#/components/schemas/OutstandingTotals' }
+        grid:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/OutstandingTotals'
+              - type: object
+                required: [department, departmentName, facultyCode, facultyName, level]
+                properties:
+                  department: { type: [string, 'null'] }
+                  departmentName: { type: [string, 'null'] }
+                  facultyCode: { type: [string, 'null'] }
+                  facultyName: { type: [string, 'null'] }
+                  level: { type: [integer, 'null'] }
+        byFee:
+          type: array
+          items:
+            type: object
+            required: [feeId, feeName, period, feeTypeCode, dueDate, obligations, billed, collected, outstanding, collectionRate]
+            properties:
+              feeId: { type: string, format: uuid }
+              feeName: { type: string }
+              period: { type: string }
+              feeTypeCode: { type: string }
+              dueDate: { type: [string, 'null'], format: date-time }
+              obligations: { type: integer }
+              billed: { type: string, description: 'SLE minor units' }
+              collected: { type: string, description: 'SLE minor units' }
+              outstanding: { type: string, description: 'SLE minor units' }
+              collectionRate: { type: [number, 'null'] }
+        applicants:
+          type: object
+          required: [byStatus]
+          properties:
+            byStatus:
+              type: array
+              items:
+                type: object
+                required: [status, applicants, billed, collected, outstanding, paid]
+                properties:
+                  status: { type: [string, 'null'] }
+                  applicants: { type: integer }
+                  billed: { type: string, description: 'SLE minor units' }
+                  collected: { type: string, description: 'SLE minor units' }
+                  outstanding: { type: string, description: 'SLE minor units' }
+                  paid: { type: integer }
+        roster:
+          type: object
+          required: [activeStudents, withoutObligations, lastPortalEventAt]
+          properties:
+            activeStudents: { type: integer }
+            withoutObligations: { type: integer, description: 'Active students with no obligation at all (usually a missing rate rule)' }
+            lastPortalEventAt: { type: [string, 'null'], format: date-time }
+    PayerListItem:
+      type: object
+      required: [id, kind, ref, fullName, maskedPhone, programCode, department, departmentName, facultyCode, level, enrolmentStatus, applicantStatus, obligations, billed, collected, balance, standing, overdue, overdueAmount, lastPaymentAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [STUDENT, APPLICANT] }
+        ref: { type: string }
+        fullName: { type: string }
+        maskedPhone: { type: string, example: '+232*****456' }
+        programCode: { type: string }
+        department: { type: [string, 'null'] }
+        departmentName: { type: [string, 'null'] }
+        facultyCode: { type: [string, 'null'] }
+        level: { type: [integer, 'null'] }
+        enrolmentStatus: { type: [string, 'null'], enum: [ACTIVE, SUSPENDED, WITHDRAWN, GRADUATED, null] }
+        applicantStatus: { type: [string, 'null'] }
+        obligations: { type: integer, description: Obligations counted (of the selected fees) }
+        billed: { type: string, description: 'SLE minor units' }
+        collected: { type: string, description: 'SLE minor units' }
+        balance: { type: string, description: 'Outstanding, SLE minor units' }
+        standing: { $ref: '#/components/schemas/Standing' }
+        overdue: { type: boolean }
+        overdueAmount: { type: string, description: 'SLE minor units' }
+        lastPaymentAt: { type: [string, 'null'], format: date-time }
+    PayerDetail:
+      type: object
+      required: [payer, linked, totals, obligations, receipts, portalEvents]
+      properties:
+        payer:
+          type: object
+          required: [id, kind, ref, fullName, phone, programCode, department, departmentName, facultyCode, facultyName, level, finalYear, residency, intake, applicantStatus, enrolmentStatus, applicationRef, portalUpdatedAt, snapshotAt]
+          properties:
+            id: { type: string, format: uuid }
+            kind: { type: string, enum: [STUDENT, APPLICANT] }
+            ref: { type: string }
+            fullName: { type: string }
+            phone: { type: string, description: Full number }
+            programCode: { type: string }
+            department: { type: [string, 'null'] }
+            departmentName: { type: [string, 'null'] }
+            facultyCode: { type: [string, 'null'] }
+            facultyName: { type: [string, 'null'] }
+            level: { type: [integer, 'null'] }
+            finalYear: { type: [boolean, 'null'] }
+            residency: { type: string, enum: [LOCAL, INTERNATIONAL] }
+            intake: { type: string }
+            applicantStatus: { type: [string, 'null'] }
+            enrolmentStatus: { type: [string, 'null'], enum: [ACTIVE, SUSPENDED, WITHDRAWN, GRADUATED, null] }
+            applicationRef: { type: [string, 'null'] }
+            portalUpdatedAt: { type: [string, 'null'], format: date-time }
+            snapshotAt: { type: string, format: date-time }
+        linked:
+          type: object
+          required: [applicant, student]
+          description: The application a student came from, or the student an applicant became.
+          properties:
+            applicant: { type: [object, 'null'], required: [id, ref], properties: { id: { type: string, format: uuid }, ref: { type: string } } }
+            student: { type: [object, 'null'], required: [id, ref], properties: { id: { type: string, format: uuid }, ref: { type: string } } }
+        totals:
+          type: object
+          required: [obligations, billed, collected, outstanding, standing, overdue, collectionRate]
+          properties:
+            obligations: { type: integer }
+            billed: { type: string, description: 'SLE minor units' }
+            collected: { type: string, description: 'SLE minor units' }
+            outstanding: { type: string, description: 'SLE minor units' }
+            standing: { $ref: '#/components/schemas/Standing' }
+            overdue: { type: boolean }
+            collectionRate: { type: [number, 'null'] }
+        obligations:
+          type: array
+          items:
+            type: object
+            required: [id, status, amount, rateRuleId, createdAt, fee, billed, collected, balance, overdue, minInstalment, entries, payments]
+            properties:
+              id: { type: string, format: uuid }
+              status: { type: string, enum: [OPEN, PAID] }
+              amount: { type: string, description: 'SLE minor units, as priced' }
+              rateRuleId: { type: [string, 'null'], format: uuid }
+              createdAt: { type: string, format: date-time }
+              fee:
+                type: object
+                required: [id, name, period, feeTypeCode, status, dueDate]
+                properties:
+                  id: { type: string, format: uuid }
+                  name: { type: string }
+                  period: { type: string }
+                  feeTypeCode: { type: string }
+                  status: { type: string, enum: [DRAFT, ACTIVE, CLOSED] }
+                  dueDate: { type: [string, 'null'], format: date-time }
+              billed: { type: string, description: 'SLE minor units' }
+              collected: { type: string, description: 'SLE minor units' }
+              balance: { type: string, description: 'SLE minor units (negative = overpaid)' }
+              overdue: { type: boolean }
+              minInstalment: { type: string, description: 'Smallest next payment the channels accept against the balance, SLE minor units' }
+              entries:
+                type: array
+                items:
+                  type: object
+                  required: [id, type, amount, memo, paymentId, createdBy, createdAt]
+                  properties:
+                    id: { type: string, format: uuid }
+                    type: { type: string, enum: [CHARGE, PAYMENT, ADJUSTMENT, REFUND] }
+                    amount: { type: string, description: 'Signed, SLE minor units' }
+                    memo: { type: [string, 'null'] }
+                    paymentId: { type: [string, 'null'], format: uuid }
+                    createdBy: { type: string }
+                    createdAt: { type: string, format: date-time }
+              payments:
+                type: array
+                items:
+                  type: object
+                  required: [id, paymentRef, amount, status, channel, collectionMethod, payerPhone, createdAt, completedAt, failureReason, receiptNumber]
+                  properties:
+                    id: { type: string, format: uuid }
+                    paymentRef: { type: string }
+                    amount: { type: string, description: 'SLE minor units' }
+                    status: { $ref: '#/components/schemas/PaymentStatus' }
+                    channel: { $ref: '#/components/schemas/Channel' }
+                    collectionMethod: { type: string }
+                    payerPhone: { type: [string, 'null'] }
+                    createdAt: { type: string, format: date-time }
+                    completedAt: { type: [string, 'null'], format: date-time }
+                    failureReason: { type: [string, 'null'] }
+                    receiptNumber: { type: [string, 'null'] }
+        receipts:
+          type: array
+          items:
+            type: object
+            required: [id, number, amount, issuedAt, obligationId, paymentId]
+            properties:
+              id: { type: string, format: uuid }
+              number: { type: string }
+              amount: { type: string, description: 'SLE minor units' }
+              issuedAt: { type: string, format: date-time }
+              obligationId: { type: string, format: uuid }
+              paymentId: { type: string, format: uuid }
+        portalEvents:
+          type: array
+          items:
+            type: object
+            required: [id, type, result, error, occurredAt, receivedAt]
+            properties:
+              id: { type: string }
+              type: { type: string }
+              result: { type: string, enum: [APPLIED, STALE, REJECTED] }
+              error: { type: [string, 'null'] }
+              occurredAt: { type: [string, 'null'], format: date-time }
+              receivedAt: { type: string, format: date-time }
     Permission:
       type: string
       enum: [fees.read, fees.manage, instalments.manage, payers.read, payers.adjust, payments.read, payments.export, payments.refund, payments.reconcile, receipts.resend, accounts.read, accounts.manage, payouts.read, payouts.manage, transfers.read, transfers.retry, reconciliation.read, reconciliation.manage, outbox.read, outbox.retry, reports.read, audit.read, users.manage, settings.manage, academics.manage, portal.read]
