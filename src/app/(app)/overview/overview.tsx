@@ -8,7 +8,7 @@ import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
 import { useMe } from "@/auth/auth-provider";
 import { useScopeNames } from "@/components/academics";
-import { CopyValue, DateTime, Money, StatusBadge } from "@/components/format";
+import { CopyValue, DateTime, Money, PaymentStatusBadge, StatusBadge } from "@/components/format";
 import { Can, useCanOp } from "@/components/permission";
 import { EmptyState, ErrorState, LoadingBlock, PageHeader } from "@/components/states";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,7 +28,7 @@ const ATTENTION: { key: keyof Counts; label: string; href: string }[] = [
   { key: "stuckPayouts", label: "Stuck payouts (> 1 h)", href: "/reconciliation?tab=attention#stuckPayouts" },
   { key: "failedPayouts", label: "Failed payouts (7 days)", href: "/treasury/payouts?status=FAILED" },
   { key: "deadOutbox", label: "Dead outbox messages", href: "/treasury/outbox?status=DEAD" },
-  { key: "staleOpenPayments", label: "Stale open payments", href: "/reconciliation?tab=attention#staleOpenPayments" },
+  { key: "staleOpenPayments", label: "Processing for over an hour", href: "/reconciliation?tab=attention#staleOpenPayments" },
 ];
 
 function Attention() {
@@ -169,7 +169,7 @@ function LatestPayments() {
                     <TableCell className="max-w-40 truncate">{p.payer.fullName}</TableCell>
                     <TableCell>{p.feeTypeCode}</TableCell>
                     <TableCell>
-                      <StatusBadge status={p.status} />
+                      <PaymentStatusBadge status={p.status} />
                     </TableCell>
                     <TableCell className="text-right">
                       <Money minor={p.amount} />

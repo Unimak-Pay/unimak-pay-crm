@@ -59,6 +59,7 @@ function normalize(s: RawSummary, f: { from: string; to: string }) {
       started: s.payments?.started ?? 0,
       completed: ca(s.payments?.completed),
       pending: ca(s.payments?.pending),
+      processing: ca(s.payments?.processing),
       failed: ca(s.payments?.failed),
       expired: ca(s.payments?.expired),
       completionRate: s.payments?.completionRate ?? null,
@@ -208,7 +209,7 @@ function DailyChart({ byDay }: { byDay: Summary["byDay"] }) {
 function FunnelRow({ label, count, amount, started, tone }: { label: string; count: number; amount: string; started: number; tone: string }) {
   const pct = started ? (count / started) * 100 : 0;
   return (
-    <li className="text-sm">
+    <li className="text-sm" data-testid="funnel-row">
       <div className="flex items-baseline justify-between gap-3">
         <span>{label}</span>
         <span className="tabular-nums">
@@ -298,7 +299,7 @@ export function Collections() {
             <Kpi label="Platform commission">
               <Money minor={s.collected.platformFees} />
             </Kpi>
-            <Kpi label="Late settlements" hint="Completed after their hold expired">
+            <Kpi label="Late settlements" hint="Completed after their old 15-minute expiry">
               {s.collected.lateSettlements}
             </Kpi>
           </div>
@@ -338,12 +339,17 @@ export function Collections() {
                   </span>{" "}
                   completed
                 </p>
-                <ul className="space-y-2.5">
+                {/* started → awaiting payment → processing → completed; payments no longer expire, so expired only shows for old ones */}
+                <ul className="space-y-2.5" aria-label="Payment funnel" data-testid="payment-funnel">
+                  <FunnelRow label="Awaiting payment" count={s.payments.pending.count} amount={s.payments.pending.amount} started={s.payments.started} tone="bg-muted-foreground/60" />
+                  <FunnelRow label="Processing" count={s.payments.processing.count} amount={s.payments.processing.amount} started={s.payments.started} tone="bg-sky-600" />
                   <FunnelRow label="Completed" count={s.payments.completed.count} amount={s.payments.completed.amount} started={s.payments.started} tone="bg-emerald-600" />
-                  <FunnelRow label="Pending" count={s.payments.pending.count} amount={s.payments.pending.amount} started={s.payments.started} tone="bg-amber-500" />
                   <FunnelRow label="Failed" count={s.payments.failed.count} amount={s.payments.failed.amount} started={s.payments.started} tone="bg-red-600" />
-                  <FunnelRow label="Expired" count={s.payments.expired.count} amount={s.payments.expired.amount} started={s.payments.started} tone="bg-muted-foreground/50" />
+                  {s.payments.expired.count > 0 && (
+                    <FunnelRow label="Expired (before 28 Nov)" count={s.payments.expired.count} amount={s.payments.expired.amount} started={s.payments.started} tone="bg-muted-foreground/30" />
+                  )}
                 </ul>
+                <p className="mt-2 text-xs text-muted-foreground">Unpaid payments are deleted after 7 days, so they drop out of the funnel.</p>
               </CardContent>
             </Card>
           </div>

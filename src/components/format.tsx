@@ -53,6 +53,8 @@ export const STATUS_CLASS = {
   amber: "border-transparent bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300",
   red: "border-transparent bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   grey: "border-transparent bg-muted text-muted-foreground",
+  blue: "border-transparent bg-sky-100 text-sky-900 dark:bg-sky-950 dark:text-sky-200",
+  muted: "border-border bg-transparent text-muted-foreground",
 };
 
 export function statusTone(status: string): keyof typeof STATUS_CLASS {
@@ -95,5 +97,39 @@ export function CopyValue({ value, className, truncate }: { value: string | null
         {copied ? <Check className="size-3" aria-hidden /> : <Copy className="size-3" aria-hidden />}
       </button>
     </span>
+  );
+}
+
+type PaymentStatus = "INITIATED" | "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "EXPIRED";
+
+/** What a payment's status means to a person (docs/payment-lifecycle.md: payments no longer expire). */
+export const PAYMENT_STATUS_LABEL: Record<PaymentStatus, string> = {
+  INITIATED: "Starting",
+  PENDING: "Awaiting payment",
+  PROCESSING: "Processing",
+  COMPLETED: "Paid",
+  FAILED: "Failed",
+  EXPIRED: "Expired (old)",
+};
+const PAYMENT_TONE: Record<PaymentStatus, keyof typeof STATUS_CLASS> = {
+  INITIATED: "grey",
+  PENDING: "grey",
+  PROCESSING: "blue",
+  COMPLETED: "green",
+  FAILED: "red",
+  EXPIRED: "muted",
+};
+const PAYMENT_HINT: Partial<Record<PaymentStatus, string>> = {
+  PENDING: "Created, not paid yet. Deleted after 7 days if nobody pays.",
+  PROCESSING: "Monime is collecting the money.",
+  EXPIRED: "Payments made before 28 Nov 2026 expired after 15 minutes.",
+};
+
+/** A payment's status in words. Other entities (transfers, outbox, …) keep StatusBadge. */
+export function PaymentStatusBadge({ status }: { status: PaymentStatus }) {
+  return (
+    <Badge variant="outline" data-status={status} title={PAYMENT_HINT[status]} className={cn("whitespace-nowrap text-[11px]", STATUS_CLASS[PAYMENT_TONE[status]])}>
+      {PAYMENT_STATUS_LABEL[status]}
+    </Badge>
   );
 }

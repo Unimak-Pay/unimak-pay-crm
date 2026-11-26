@@ -221,7 +221,8 @@ export const eventColumns = [
   evCol.accessor("type", { header: "Type", cell: (c) => <span className="font-mono text-xs">{c.getValue()}</span> }),
   evCol.accessor("status", { header: "Status", cell: (c) => <StatusBadge status={c.getValue()} /> }),
   evCol.accessor("attempts", { header: "Attempts", meta: { align: "right" } }),
-  evCol.accessor((e) => e.error ?? "", { id: "error", header: "Outcome", cell: (c) => <span className="block max-w-72 truncate text-xs" title={c.getValue()}>{c.getValue() || "—"}</span> }),
+  // in full: an UNMATCHED note names the deleted payment and obligation someone has to apply or refund
+  evCol.accessor((e) => e.error ?? "", { id: "error", header: "Outcome", cell: (c) => <span className="block min-w-64 max-w-md text-xs break-words whitespace-normal">{c.getValue() || "—"}</span> }),
   evCol.accessor((e) => (e.resolvedAt ? "resolved" : ""), {
     id: "resolved",
     header: "Resolved",

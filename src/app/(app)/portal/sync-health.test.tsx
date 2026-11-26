@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { SyncBadge } from "./events/events";
-import { lastUpdateLabel, syncHealth } from "./sync-health";
+import { dataFreshnessLabel, lastUpdateLabel, syncHealth } from "./sync-health";
 
 const now = new Date("2026-11-21T12:00:00Z");
 const ago = (ms: number) => new Date(now.getTime() - ms).toISOString();
@@ -27,6 +27,13 @@ describe("lastUpdateLabel", () => {
     [50 * HOUR, "2 days ago"],
   ])("%d ms → %s", (ms, when) => expect(lastUpdateLabel(ago(ms), now)).toBe(`Last update from the portal: ${when}`));
   it("says never without one", () => expect(lastUpdateLabel(null, now)).toBe("Last update from the portal: never"));
+});
+
+describe("dataFreshnessLabel", () => {
+  it("reads as data freshness on report pages", () => {
+    expect(dataFreshnessLabel(ago(5 * MIN), now)).toBe("Data from the portal, updated 5 min ago");
+    expect(dataFreshnessLabel(null, now)).toBe("No data from the portal yet");
+  });
 });
 
 describe("SyncBadge", () => {

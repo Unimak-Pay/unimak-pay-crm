@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { components } from "@/api/schema.gen";
-import { collectionRate, createAnalytics, maskPhone, parseFilters } from "./analytics";
+import { collectionRate, createAnalytics, maskEmail, maskPhone, parseFilters } from "./analytics";
 import { createDb } from "./db";
 
 type Principal = components["schemas"]["AdminPrincipal"];
@@ -62,6 +62,12 @@ describe("mock payer list", () => {
 
   it("masks phones in the list", () => {
     expect(maskPhone("+23276123456")).toBe("+232*****456");
+    expect(maskEmail(" Aminata.Kamara@Gmail.com ")).toBe("a***@gmail.com");
+    expect(maskEmail("not-an-email")).toBeNull();
+    const page = a.list(f(), admin, new URL("http://x/?limit=200"));
+    if (typeof page === "string") throw new Error(page);
+    expect(page.items.some((p) => p.maskedEmail === null)).toBe(true);
+    expect(page.items.filter((p) => p.maskedEmail).every((p) => /^[a-z]\*\*\*@gmail\.com$/.test(p.maskedEmail!))).toBe(true);
     expect(collectionRate(0n, 0n)).toBeNull();
   });
 });

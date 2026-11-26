@@ -45,6 +45,9 @@ tags:
       Public API for the UNIMAK dot in Monime Dash. A dot's code is public, so there is no secret:
       requests are limited per IP (`DOT_RATE_LIMIT_PER_MINUTE`, 429 `RATE_LIMITED` with `Retry-After`),
       the lookup shows the full name but a masked phone (status lookups stay masked), and amounts and the receiving account are decided by the server.
+      From dot 0.2.3, `X-User-Alias` (the Dash account's phone) must match the payer's phone for private
+      details (full lookup, history, pay requests, clearance): 403 `ALIAS_MISMATCH` / `ALIAS_REQUIRED`.
+      It's a check, not a login. Sponsors (another number) get a short lookup and can still quote and pay.
       The dot pays with `dash.payments.request({ order, financialAccountId })` using what
       `POST /v1/dot/payments` returns; Monime's `payment.processing_completed` webhook (matched on
       `reference` = our payment id) is the only thing that marks it paid.
@@ -104,6 +107,24 @@ paths:
       responses:
         '200': { description: Valid receipt, content: { text/html: { schema: { type: string } } } }
         '404': { description: Unknown code, content: { text/html: { schema: { type: string } } } }
+
+  /c/{code}:
+    get:
+      operationId: publicExamPass
+      tags: [Public]
+      summary: Exam pass check (what an invigilator's scanner opens)
+      description: |
+        Re-checks clearance **now** against the current rule, every time, so a screenshot of an
+        old pass proves nothing: "✓ Cleared" or "✗ Not cleared", with the student's full name, ID,
+        programme and the time checked. No phone, no amounts. `noindex`, `Cache-Control no-store`;
+        rate-limited per IP like the dot API.
+      security: []
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string, example: 7KQ2MX9P }, description: The pass code }
+      responses:
+        '200': { description: The live check (cleared or not), content: { text/html: { schema: { type: string } } } }
+        '404': { description: Unknown code, content: { text/html: { schema: { type: string } } } }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   # ── Channel API ─────────────────────────────────────────────────────────────
   /v1/channel/payers/{kind}/{ref}:
@@ -194,7 +215,8 @@ paths:
       tags: [Channel]
       summary: Start a payment
       description: |
-        Places a hold on the obligation and creates a Monime payment code (15 minutes).
+        Creates a PENDING payment (awaiting payment: it never expires and holds nothing; deleted after 7 days if
+        unpaid, see docs/payment-lifecycle.md) and a Monime payment code. `expiresAt` = when it is deleted if unpaid.
         The payer approves by dialling `ussdCode`. Idempotent per client on `idempotencyKey`:
         repeating the call returns the same payment (and retries Monime if it never got through).
         Give the payer `paymentRef` to check the status later.
@@ -265,10 +287,14 @@ paths:
       tags: [Dash dot]
       summary: Look up a payer and what they owe
       description: |
-        Fetches from the university portal (cached) and creates any missing obligations.
-        Returns the full name and academic details; the phone is masked.
+        Reads our store first (the portal for someone new) and creates any missing obligations.
+        - `X-User-Alias` matches the payer's phone, or is missing (dots before 0.2.3, while
+          `DOT_ALIAS_REQUIRED` is off): the full name and academic details (`DotPayer`), phone masked.
+        - Another number (a sponsor paying for someone): only what's needed to pay (`DotPayerShort`:
+          first name and last initial, `limited: true`) with the same obligations. After too many
+          wrong numbers from one IP or for one ID, it answers short without checking.
       security: []
-      parameters: [{ $ref: '#/components/parameters/PayerKind' }, { $ref: '#/components/parameters/PayerRef' }]
+      parameters: [{ $ref: '#/components/parameters/PayerKind' }, { $ref: '#/components/parameters/PayerRef' }, { $ref: '#/components/parameters/UserAlias' }]
       responses:
         '200':
           description: Payer and obligations
@@ -278,7 +304,7 @@ paths:
                 type: object
                 required: [payer, obligations]
                 properties:
-                  payer: { $ref: '#/components/schemas/DotPayer' }
+                  payer: { oneOf: [{ $ref: '#/components/schemas/DotPayer' }, { $ref: '#/components/schemas/DotPayerShort' }] }
                   obligations: { type: array, items: { $ref: '#/components/schemas/Obligation' } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -289,7 +315,9 @@ paths:
       operationId: dotPostQuote
       tags: [Dash dot]
       summary: Validate an amount without creating anything
+      description: Works for anyone (sponsors too); `X-User-Alias` isn't checked.
       security: []
+      parameters: [{ $ref: '#/components/parameters/UserAlias' }]
       requestBody:
         required: true
         content:
@@ -320,13 +348,22 @@ paths:
       tags: [Dash dot]
       summary: Start a payment and get the order for Dash's payment sheet
       description: |
-        Holds the amount on the obligation (15 minutes) and returns `order` and `financialAccountId`
+        Records a PENDING payment (never expires, holds nothing; `expiresAt` = when it is deleted if still unpaid)
+        and returns `order` and `financialAccountId`
         to pass unchanged to `dash.payments.request()`. No Monime call is made here.
         Idempotent on the `Idempotency-Key` header: a retry returns the same payment and order
         (409 `IDEMPOTENCY_CONFLICT` if the key was used for a different obligation or amount).
-        Show the payer `paymentRef` for later status checks.
+        Show the payer `paymentRef` for later status checks. Works for anyone (sponsors too);
+        `X-User-Alias` isn't checked.
+
+        Optional (dot 0.2.3+): `payRequestCode` pays through a pay request (it must be open, not
+        expired and for this obligation: 404 / 400 / 409 `INVALID_STATE`; a retry with the same key
+        replays even after the request closed). The payment counts towards the request only once
+        Monime completes it. `paidByName` (first name, display only) and `payingForSelf` feed
+        `paidBy` in history and receipts.
       security: []
       parameters:
+        - { $ref: '#/components/parameters/UserAlias' }
         - name: Idempotency-Key
           in: header
           required: true
@@ -336,7 +373,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/DotAmountRequest' }
+            schema: { $ref: '#/components/schemas/DotPaymentRequest' }
       responses:
         '201':
           description: Payment started
@@ -367,9 +404,149 @@ paths:
       description: '`ref` is our 8-digit payment ref or Monime''s order number. Payer details are masked.'
       security: []
       parameters:
+        - { $ref: '#/components/parameters/UserAlias' }
         - { name: ref, in: path, required: true, schema: { type: string, examples: ['15540719', '3BMRXXXQXJW3'] } }
       responses:
         '200': { description: Status, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentStatusView' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/dot/payers/{kind}/{ref}/payments:
+    get:
+      operationId: dotPaymentHistory
+      tags: [Dash dot]
+      summary: Payment history
+      description: |
+        Every payment towards the payer's fees from any channel, newest first: all COMPLETED ones,
+        those still open, and FAILED / EXPIRED ones from the last 30 days. `X-User-Alias` must match.
+        `academicYear` is the latest `YYYY/YY` period of the payer's obligations (else their latest
+        period; null with none); `totalPaid` = COMPLETED payments on obligations in that period.
+        Only Monime's confirmation makes a payment COMPLETED.
+      security: []
+      parameters: [{ $ref: '#/components/parameters/PayerKind' }, { $ref: '#/components/parameters/PayerRef' }, { $ref: '#/components/parameters/UserAlias' }]
+      responses:
+        '200': { description: History, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentHistory' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/AliasForbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/dot/payments/{paymentRef}/receipt:
+    get:
+      operationId: dotGetReceipt
+      tags: [Dash dot]
+      summary: Receipt of a completed payment
+      description: |
+        By our 8-digit `paymentRef` (random), so the result page can open it right after paying.
+        404 until Monime completed the payment. `verifyUrl` is the public `/r/{verifyCode}` page
+        (show it as a QR code). `pdfUrl` is null for now.
+      security: []
+      parameters:
+        - { name: paymentRef, in: path, required: true, schema: { $ref: '#/components/schemas/PaymentRef' } }
+        - $ref: '#/components/parameters/UserAlias'
+      responses:
+        '200': { description: Receipt, content: { application/json: { schema: { $ref: '#/components/schemas/DotReceipt' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/dot/payers/{kind}/{ref}/clearance:
+    get:
+      operationId: dotGetClearance
+      tags: [Dash dot]
+      summary: Exam clearance
+      description: |
+        Students only (applicants: 404). `X-User-Alias` must match. Evaluated live from the ledger
+        and the finance office's rule (`GET /v1/admin/clearance-policy`): NOT_CLEARED lists the
+        `blocking` fees and what's `outstanding` (money held by an open payment isn't paid yet).
+        CLEARED carries a pass: `passCode` and `verifyUrl` (`/c/{passCode}`, which re-checks live).
+        The pass code stays the same for the student and period.
+      security: []
+      parameters: [{ $ref: '#/components/parameters/PayerKind' }, { $ref: '#/components/parameters/PayerRef' }, { $ref: '#/components/parameters/UserAlias' }]
+      responses:
+        '200': { description: Clearance, content: { application/json: { schema: { $ref: '#/components/schemas/Clearance' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/AliasForbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/dot/pay-requests:
+    post:
+      operationId: dotCreatePayRequest
+      tags: [Dash dot]
+      summary: Ask someone to pay (create a pay request)
+      description: |
+        `X-User-Alias` must match the student's phone (403 `ALIAS_REQUIRED` / `ALIAS_MISMATCH`).
+        Idempotent on `Idempotency-Key` like payments (same key, different body: 409
+        `IDEMPOTENCY_CONFLICT`). `amount` above the fee's payable: 422 `AMOUNT_EXCEEDS_PAYABLE`; a
+        paid fee: 409 `OBLIGATION_SETTLED`; at most 20 open requests per payer (400 `VALIDATION`).
+        Expires after 30 days, or on the fee's due date if sooner, never less than 3 days.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/UserAlias'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, pattern: '^[A-Za-z0-9_.:-]{8,100}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, ref, obligationId, message]
+              properties:
+                kind: { type: string, enum: [student, applicant] }
+                ref: { type: string }
+                obligationId: { type: string, format: uuid }
+                amount: { oneOf: [{ $ref: '#/components/schemas/MinorAmount' }, { type: 'null' }], description: 'null = "whatever you can"' }
+                message: { type: string, minLength: 1, maxLength: 280, description: 'Trimmed; 1-280 characters after trimming.' }
+                recipientName: { type: [string, 'null'], maxLength: 60 }
+      responses:
+        '201': { description: The request (or the existing one on a retry), content: { application/json: { schema: { $ref: '#/components/schemas/PayRequest' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/AliasForbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/dot/pay-requests/{code}:
+    get:
+      operationId: dotGetPayRequest
+      tags: [Dash dot]
+      summary: A pay request, for the sponsor's page
+      description: |
+        No alias match needed: the code is the secret. The first call records `openedAt`.
+        `requester` is only a first name and programme.
+      security: []
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string, example: K7PQ2XA } }
+        - $ref: '#/components/parameters/UserAlias'
+      responses:
+        '200': { description: The request, content: { application/json: { schema: { $ref: '#/components/schemas/PayRequest' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/dot/payers/{kind}/{ref}/pay-requests:
+    get:
+      operationId: dotListPayRequests
+      tags: [Dash dot]
+      summary: A payer's pay requests, newest first
+      description: '`X-User-Alias` must match the payer''s phone.'
+      security: []
+      parameters: [{ $ref: '#/components/parameters/PayerKind' }, { $ref: '#/components/parameters/PayerRef' }, { $ref: '#/components/parameters/UserAlias' }]
+      responses:
+        '200':
+          description: Requests
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requests]
+                properties:
+                  requests: { type: array, items: { $ref: '#/components/schemas/PayRequest' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/AliasForbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
@@ -381,7 +558,7 @@ paths:
       summary: Monime webhook
       description: |
         Signed with `Monime-Signature: t=<unix>,v1=<base64 HMAC-SHA256(secret, "<t>_" + raw body)>`.
-        Events: `payment.processing_completed`, `internal_transfer.completed|failed`,
+        Events: `payment.processing_started` (→ PROCESSING), `payment.processing_completed`, `internal_transfer.completed|failed`,
         `payout.completed|failed`, `financial_account.credited|debited`. Deduplicated on
         `event.id`; business mismatches are acknowledged (200) and queued for reconciliation.
       security: [{ monimeSignature: [] }]
@@ -526,15 +703,17 @@ paths:
     get:
       operationId: cronExpirePayments
       tags: [Cron]
-      summary: Expire open payments past expiresAt; delete USSD sessions older than 24 h
-      description: Also runs every 5 minutes in the database (Supabase pg_cron) and nightly.
+      summary: Payment housekeeping; delete USSD sessions older than 24 h
+      description: |
+        Payments don't expire. PROCESSING with no completion for 24 h goes back to PENDING; payments still
+        awaiting payment after PENDING_PAYMENT_RETENTION_DAYS are deleted (audited). Also runs nightly.
       security: [{ cronSecret: [] }]
       responses:
         '200':
           description: Counts
           content:
             application/json:
-              schema: { type: object, properties: { expired: { type: integer }, ussdSessionsDeleted: { type: integer } } }
+              schema: { type: object, properties: { processingReset: { type: integer }, pendingDeleted: { type: integer }, ussdSessionsDeleted: { type: integer }, portalEventsDeleted: { type: integer } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /cron/reconcile:
@@ -553,7 +732,7 @@ paths:
                 properties:
                   skipped: { type: boolean }
                   runId: { type: string, format: uuid }
-                  housekeeping: { type: object, properties: { expired: { type: integer }, ussdSessionsDeleted: { type: integer } } }
+                  housekeeping: { type: object, properties: { processingReset: { type: integer }, pendingDeleted: { type: integer }, ussdSessionsDeleted: { type: integer }, portalEventsDeleted: { type: integer } } }
                   outbox: { type: object, additionalProperties: { type: integer } }
                 additionalProperties: true
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -813,7 +992,7 @@ paths:
         rows (400 `VALIDATION` beyond that). Cells starting with `= + - @` are prefixed with `'`.
         UTF-8 with BOM. Every export is audited (`payers.export`). Needs `payers.read` and `payments.export`.
 
-        Columns: kind, ref, full_name, phone_masked, program, department, department_name, faculty, level,
+        Columns: kind, ref, full_name, phone_masked, email_masked, program, department, department_name, faculty, level,
         enrolment_status, applicant_status, obligations, billed_sle, collected_sle, balance_sle, standing,
         overdue, overdue_sle, last_payment_at, payer_id.
       x-permission: payments.export
@@ -859,6 +1038,48 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/admin/clearance-policy:
+    get:
+      operationId: adminGetClearancePolicy
+      tags: [Admin · Fee setup]
+      summary: The exam-clearance rule
+      description: '`placeholder: true` until the finance office sets the real rule.'
+      x-permission: fees.read
+      security: [{ adminJwt: [] }]
+      responses:
+        '200': { description: Rule, content: { application/json: { schema: { $ref: '#/components/schemas/ClearancePolicy' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: adminPutClearancePolicy
+      tags: [Admin · Fee setup]
+      summary: Set the exam-clearance rule
+      description: |
+        A student is cleared when every obligation of `feeTypeCodes` in `period`, and (if
+        `includeOverdue`) every obligation past its fee's due date, has a zero balance. Unknown fee
+        type codes, or a rule that blocks nothing, are rejected (400). Clears `placeholder`. Audited
+        (`clearance_policy.update`). Passes already issued re-check against the new rule.
+      x-permission: clearance.manage
+      security: [{ adminJwt: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [examName, period, feeTypeCodes, includeOverdue]
+              properties:
+                examName: { type: string, minLength: 1, maxLength: 80, example: First semester exams }
+                period: { type: string, minLength: 1, maxLength: 20, example: 2026/27 }
+                feeTypeCodes: { type: array, maxItems: 20, items: { type: string }, example: [TUITION] }
+                includeOverdue: { type: boolean }
+      responses:
+        '200': { description: The new rule, content: { application/json: { schema: { $ref: '#/components/schemas/ClearancePolicy' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /v1/admin/audit-log:
     get:
@@ -1027,8 +1248,9 @@ paths:
         - **collected**: COMPLETED payments by `completedAt` in the range (a late settlement counts on
           the day Monime completed it). `monimeFees + platformFees + net = amount`.
         - **byDay**: every day of the range, zero-filled. Days are UTC (= Africa/Freetown).
-        - **payments**: the funnel of payments *started* in the range, by current status. An open
-          payment past expiry counts as expired.
+        - **payments**: the funnel of payments *started* in the range, by current status (pending =
+          awaiting payment, processing = Monime is processing it). Payments don't expire; unpaid ones are
+          deleted after 7 days, so they leave the funnel.
         - **byFaculty** / **byDepartment**: collected, by the payer's department and that department's
           *current* faculty (`facultyCode: null` = department without a faculty yet, or no department).
         - **commission** / **payouts**: transfers / payouts created in the range. They are `null` unless
@@ -1119,8 +1341,9 @@ paths:
                       started: { type: integer }
                       completed: { $ref: '#/components/schemas/CountAmount' }
                       pending: { $ref: '#/components/schemas/CountAmount' }
+                      processing: { $ref: '#/components/schemas/CountAmount' }
                       failed: { $ref: '#/components/schemas/CountAmount' }
-                      expired: { $ref: '#/components/schemas/CountAmount' }
+                      expired: { $ref: '#/components/schemas/CountAmount', description: 'Payments made before payments stopped expiring (2026-11-28)' }
                       completionRate: { type: [number, 'null'], minimum: 0, maximum: 1 }
                   commission:
                     type: [object, 'null']
@@ -1220,7 +1443,7 @@ paths:
       operationId: adminReconcilePayment
       tags: [Admin · Payments]
       summary: Ask Monime about an open payment
-      description: Closes it if its payment code expired or was cancelled. Completion only ever comes from Monime's webhook.
+      description: Reports what Monime says about the payment code; never changes the payment (payments don't expire). Completion only ever comes from Monime's webhook or the nightly reconciliation.
       x-permission: payments.reconcile
       security: [{ adminJwt: [] }]
       parameters: [{ $ref: '#/components/parameters/Id' }]
@@ -1943,7 +2166,7 @@ paths:
                 paymentId: { type: string, format: uuid }
                 transferId: { type: string, format: uuid }
                 payoutId: { type: string, format: uuid }
-                outcome: { type: string, enum: [completed, failed, expired] }
+                outcome: { type: string, enum: [processing, completed, failed, expired] }
                 amount: { $ref: '#/components/schemas/MinorAmount' }
                 payerPhone: { type: string, pattern: '^\+\d{8,15}$', description: 'Reported masked, like Monime.' }
                 metadata: { type: object, additionalProperties: { type: string } }
@@ -2002,6 +2225,18 @@ components:
     DepartmentFilter: { name: department, in: query, schema: { type: string, maxLength: 40 }, example: NURSING, description: Department code. }
     FacultyFilter: { name: faculty, in: query, schema: { type: string, maxLength: 40 }, example: FAC-NURSING-AHS, description: 'Faculty code: its departments as they are now.' }
     PayerKind: { name: kind, in: path, required: true, schema: { type: string, enum: [applicant, student] } }
+    UserAlias:
+      name: X-User-Alias
+      in: header
+      required: false
+      description: |
+        Dot 0.2.3+: the Dash account's phone number (or email when it has none), from Dash sign-in,
+        e.g. `+232 76 123456`. Phones are compared on their national number (`076123456`,
+        `23276123456` and `+232 76 123456` are the same); an email is compared with the email the
+        portal gave us, ignoring case.
+        A check, not a login: the dot sets it itself. Failed matches are limited per IP and per ID;
+        it is never returned and only logged masked.
+      schema: { type: string, maxLength: 254 }
     PayerRef: { name: ref, in: path, required: true, schema: { type: string }, examples: { student: { value: UNI-2025-0002 }, applicant: { value: APP-2026-0001 } } }
     AnalyticsFeeId: { name: feeId, in: query, schema: { type: string, format: uuid }, description: One fee. }
     AnalyticsFeeType: { name: feeType, in: query, schema: { type: string, maxLength: 40 }, example: TUITION, description: Fee type code. }
@@ -2043,6 +2278,14 @@ components:
     Forbidden: { description: 'Missing permission, not an admin, or 2FA required', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     NotFound: { description: Not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     Conflict: { description: Conflict, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    AliasForbidden:
+      description: |
+        `ALIAS_REQUIRED` (no `X-User-Alias`) or `ALIAS_MISMATCH` (another number). `message` is written
+        for the student; show it as it is.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: { code: ALIAS_MISMATCH, message: "This ID isn't linked to the Dash number you're using. Use the number the university has for you, or contact the finance office.", details: null } }
     Unprocessable: { description: Amount or rule not acceptable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     RateLimited:
       description: Too many requests from this IP; retry after `Retry-After` seconds
@@ -2061,12 +2304,13 @@ components:
     PaymentRef: { type: string, pattern: '^[1-9]\d{7}$', example: '15540719', description: '8-digit ref to give the payer for status checks.' }
     DotPayer:
       type: object
-      required: [kind, ref, fullName, maskedPhone, programCode, programLine, department, departmentName, facultyCode, facultyName, level, finalYear, residency, intake, applicantStatus, stale]
+      required: [kind, ref, fullName, maskedPhone, maskedEmail, programCode, programLine, department, departmentName, facultyCode, facultyName, level, finalYear, residency, intake, applicantStatus, stale]
       properties:
         kind: { type: string, enum: [applicant, student] }
         ref: { type: string, example: UNI-2026-0001 }
         fullName: { type: string, example: Abdul Koroma }
         maskedPhone: { type: [string, 'null'], example: '+232*****001' }
+        maskedEmail: { type: [string, 'null'], example: 'a***@gmail.com', description: 'null when the portal has no email' }
         programCode: { type: string, example: BSC-CS }
         programLine: { type: string, example: 'BSC-CS · Level 1' }
         department: { type: [string, 'null'], example: COMPUTER-SCI }
@@ -2079,6 +2323,153 @@ components:
         intake: { type: string, example: 2026-SEP }
         applicantStatus: { type: [string, 'null'], description: 'Applicants only (e.g. APPLIED, ADMITTED)' }
         stale: { type: boolean, description: 'true when the portal was down and this is the last snapshot' }
+    DotPayerShort:
+      type: object
+      description: 'The lookup for someone whose X-User-Alias does not match (a sponsor): enough to pay, nothing more.'
+      required: [kind, ref, shortName, limited, stale]
+      properties:
+        kind: { type: string, enum: [applicant, student] }
+        ref: { type: string }
+        shortName: { type: string, example: Abdul K., description: First name and last initial }
+        limited: { const: true }
+        stale: { type: boolean }
+    DotPaymentRequest:
+      type: object
+      required: [obligationId, amount]
+      properties:
+        obligationId: { type: string, format: uuid }
+        amount: { $ref: '#/components/schemas/MinorAmount' }
+        payRequestCode: { type: string, maxLength: 20, description: 'Pay through this pay request (dot 0.2.3+).' }
+        paidByName: { type: string, maxLength: 40, description: "Payer's first name, display only; anything after the first word is dropped." }
+        payingForSelf: { type: boolean, description: 'true when the student saved on that phone is paying; display only. Default false.' }
+    PaidBy:
+      type: object
+      required: [name, self]
+      description: 'Who paid, as the dot said (display only): `paidByName` and `payingForSelf` from POST /v1/dot/payments. Never a phone.'
+      properties:
+        name: { type: [string, 'null'], example: Fatmata }
+        self: { type: boolean }
+    PaymentMethodLabel: { type: [string, 'null'], enum: [Mobile money, Card, Bank, Wallet, null], description: "From Monime's Payment channel.type (momo, card, bank, wallet); null if unknown." }
+    PaymentHistory:
+      type: object
+      required: [academicYear, totalPaid, payments]
+      properties:
+        academicYear: { type: [string, 'null'], example: 2026/27 }
+        totalPaid: { $ref: '#/components/schemas/Money' }
+        payments:
+          type: array
+          items:
+            type: object
+            required: [paymentRef, obligationId, feeName, period, amount, status, paidBy, method, receiptNumber, createdAt, completedAt]
+            properties:
+              paymentRef: { $ref: '#/components/schemas/PaymentRef' }
+              obligationId: { type: string, format: uuid }
+              feeName: { type: string }
+              period: { type: string }
+              amount: { $ref: '#/components/schemas/Money' }
+              status: { $ref: '#/components/schemas/PaymentStatus' }
+              paidBy: { $ref: '#/components/schemas/PaidBy' }
+              method: { $ref: '#/components/schemas/PaymentMethodLabel' }
+              receiptNumber: { type: [string, 'null'] }
+              createdAt: { type: string, format: date-time }
+              completedAt: { type: [string, 'null'], format: date-time }
+    DotReceipt:
+      type: object
+      required: [receiptNumber, paymentRef, amount, feeName, period, payer, paidBy, method, issuedAt, verifyUrl, pdfUrl]
+      properties:
+        receiptNumber: { type: string, example: UNIMAK-2026-000123 }
+        paymentRef: { $ref: '#/components/schemas/PaymentRef' }
+        amount: { $ref: '#/components/schemas/Money' }
+        feeName: { type: string }
+        period: { type: string }
+        payer:
+          type: object
+          required: [kind, ref, fullName, programLine]
+          properties:
+            kind: { type: string, enum: [applicant, student] }
+            ref: { type: string }
+            fullName: { type: string }
+            programLine: { type: string }
+        paidBy: { $ref: '#/components/schemas/PaidBy' }
+        method: { $ref: '#/components/schemas/PaymentMethodLabel' }
+        issuedAt: { type: string, format: date-time }
+        verifyUrl: { type: string, format: uri }
+        pdfUrl: { type: 'null', description: 'Not made yet.' }
+    Clearance:
+      type: object
+      required: [status, exam, outstanding, blocking, passCode, verifyUrl, issuedAt]
+      properties:
+        status: { type: string, enum: [CLEARED, NOT_CLEARED] }
+        exam:
+          type: object
+          required: [name, period]
+          properties:
+            name: { type: string }
+            period: { type: string }
+        outstanding: { $ref: '#/components/schemas/Money' }
+        blocking:
+          type: array
+          items:
+            type: object
+            required: [obligationId, feeName, balance]
+            properties:
+              obligationId: { type: string, format: uuid }
+              feeName: { type: string }
+              balance: { $ref: '#/components/schemas/Money' }
+        passCode: { type: [string, 'null'], example: 7KQ2MX9P }
+        verifyUrl: { type: [string, 'null'], format: uri }
+        issuedAt: { type: [string, 'null'], format: date-time }
+    ClearancePolicy:
+      type: object
+      required: [id, examName, period, feeTypeCodes, includeOverdue, placeholder, updatedBy, updatedAt]
+      properties:
+        id: { const: current }
+        examName: { type: string }
+        period: { type: string }
+        feeTypeCodes: { type: array, items: { type: string } }
+        includeOverdue: { type: boolean }
+        placeholder: { type: boolean, description: 'true until the finance office sets the real rule' }
+        updatedBy: { type: string }
+        updatedAt: { type: string, format: date-time }
+    PayRequest:
+      type: object
+      required: [code, shareUrl, obligationId, feeName, amount, paid, status, message, requester, recipientName, contributions, openedAt, createdAt, expiresAt]
+      properties:
+        code: { type: string, example: K7PQ2XA }
+        shareUrl: { type: string, format: uri, description: '`${DOT_LINK}/sponsor?request=&kind=&ref=&fee=&amount=` (amount empty when null)' }
+        obligationId: { type: string, format: uuid }
+        feeName: { type: string }
+        amount: { oneOf: [{ $ref: '#/components/schemas/Money' }, { type: 'null' }] }
+        paid: { $ref: '#/components/schemas/Money' }
+        status:
+          type: string
+          enum: [OPEN, PARTLY_PAID, PAID, CANCELLED, EXPIRED]
+          description: |
+            From its COMPLETED payments only. PAID: reached `amount`, or the fee was paid off with its
+            help; a fee paid off without it reads EXPIRED.
+        message: { type: string }
+        requester:
+          type: object
+          required: [kind, ref, firstName, programLine]
+          properties:
+            kind: { type: string, enum: [applicant, student] }
+            ref: { type: string }
+            firstName: { type: string }
+            programLine: { type: string, example: 'BSC-CS · Level 1' }
+        recipientName: { type: [string, 'null'] }
+        contributions:
+          type: array
+          items:
+            type: object
+            required: [paymentRef, name, amount, paidAt]
+            properties:
+              paymentRef: { $ref: '#/components/schemas/PaymentRef' }
+              name: { type: [string, 'null'] }
+              amount: { $ref: '#/components/schemas/Money' }
+              paidAt: { type: string, format: date-time }
+        openedAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
     DotAmountRequest:
       type: object
       required: [obligationId, amount]
@@ -2168,6 +2559,7 @@ components:
         applicationRef: { type: string, example: APP-2026-0001 }
         fullName: { type: string }
         phone: { type: string, pattern: '^\+\d{8,15}$', example: '+23276100001' }
+        email: { type: [string, 'null'], maxLength: 254, format: email, description: 'Optional. Absent: we keep the email we hold. null: none (clears it).' }
         programCode: { type: string, example: BSC-CS }
         department: { type: string, example: COMPUTER-SCI }
         intake: { type: string, example: 2026-SEP }
@@ -2182,6 +2574,7 @@ components:
         applicationRef: { type: [string, 'null'], description: 'The application this student came from.' }
         fullName: { type: string }
         phone: { type: string, pattern: '^\+\d{8,15}$' }
+        email: { type: [string, 'null'], maxLength: 254, format: email, description: 'Optional. Absent: we keep the email we hold. null: none (clears it).' }
         programCode: { type: string }
         department: { type: string }
         level: { type: integer, minimum: 1, maximum: 10 }
@@ -2301,13 +2694,14 @@ components:
             lastPortalEventAt: { type: [string, 'null'], format: date-time }
     PayerListItem:
       type: object
-      required: [id, kind, ref, fullName, maskedPhone, programCode, department, departmentName, facultyCode, level, enrolmentStatus, applicantStatus, obligations, billed, collected, balance, standing, overdue, overdueAmount, lastPaymentAt]
+      required: [id, kind, ref, fullName, maskedPhone, maskedEmail, programCode, department, departmentName, facultyCode, level, enrolmentStatus, applicantStatus, obligations, billed, collected, balance, standing, overdue, overdueAmount, lastPaymentAt]
       properties:
         id: { type: string, format: uuid }
         kind: { type: string, enum: [STUDENT, APPLICANT] }
         ref: { type: string }
         fullName: { type: string }
         maskedPhone: { type: string, example: '+232*****456' }
+        maskedEmail: { type: [string, 'null'], example: 'a***@gmail.com' }
         programCode: { type: string }
         department: { type: [string, 'null'] }
         departmentName: { type: [string, 'null'] }
@@ -2329,13 +2723,14 @@ components:
       properties:
         payer:
           type: object
-          required: [id, kind, ref, fullName, phone, programCode, department, departmentName, facultyCode, facultyName, level, finalYear, residency, intake, applicantStatus, enrolmentStatus, applicationRef, portalUpdatedAt, snapshotAt]
+          required: [id, kind, ref, fullName, phone, email, programCode, department, departmentName, facultyCode, facultyName, level, finalYear, residency, intake, applicantStatus, enrolmentStatus, applicationRef, portalUpdatedAt, snapshotAt]
           properties:
             id: { type: string, format: uuid }
             kind: { type: string, enum: [STUDENT, APPLICANT] }
             ref: { type: string }
             fullName: { type: string }
             phone: { type: string, description: Full number }
+            email: { type: [string, 'null'], description: 'Full email, when the portal has one' }
             programCode: { type: string }
             department: { type: [string, 'null'] }
             departmentName: { type: [string, 'null'] }
@@ -2450,7 +2845,7 @@ components:
               receivedAt: { type: string, format: date-time }
     Permission:
       type: string
-      enum: [fees.read, fees.manage, instalments.manage, payers.read, payers.adjust, payments.read, payments.export, payments.refund, payments.reconcile, receipts.resend, accounts.read, accounts.manage, payouts.read, payouts.manage, transfers.read, transfers.retry, reconciliation.read, reconciliation.manage, outbox.read, outbox.retry, reports.read, audit.read, users.manage, settings.manage, academics.manage, portal.read]
+      enum: [fees.read, fees.manage, instalments.manage, payers.read, payers.adjust, payments.read, payments.export, payments.refund, payments.reconcile, receipts.resend, accounts.read, accounts.manage, payouts.read, payouts.manage, transfers.read, transfers.retry, reconciliation.read, reconciliation.manage, outbox.read, outbox.retry, reports.read, audit.read, users.manage, settings.manage, academics.manage, portal.read, clearance.manage]
 
     CountAmount:
       type: object
@@ -2467,7 +2862,7 @@ components:
           properties:
             code: { type: string, example: OBLIGATION_SETTLED }
             message: { type: string }
-            details: { type: object, additionalProperties: true }
+            details: { type: [object, 'null'], additionalProperties: true }
     ValidationError:
       type: object
       properties:
@@ -2988,7 +3383,7 @@ components:
         sentAt: { type: [ string, "null" ], format: date-time }
     Payment:
       type: object
-      required: [ id, obligationId, amount, channel, clientId, idempotencyKey, paymentRef, payerPhone, phoneAuthorized, collectionMethod, status, monimeRef, ussdCode, monimePaymentId, monimeOrderNumber, pricingConfigId, monimeFee, platformFee, netAmount, expiresAt, completedAt, failureReason, createdAt, updatedAt ]
+      required: [ id, obligationId, amount, channel, clientId, idempotencyKey, paymentRef, payerPhone, phoneAuthorized, collectionMethod, status, monimeRef, ussdCode, monimePaymentId, monimeOrderNumber, pricingConfigId, monimeFee, platformFee, netAmount, expiresAt, processingAt, completedAt, failureReason, createdAt, updatedAt, payRequestId, paidByName, payingForSelf, monimeChannelType ]
       properties:
         id: { type: string, format: uuid }
         obligationId: { type: string, format: uuid }
@@ -3009,11 +3404,16 @@ components:
         monimeFee: { type: string, pattern: ^-?\d+$, description: SLE minor units }
         platformFee: { type: string, pattern: ^-?\d+$, description: SLE minor units }
         netAmount: { type: string, pattern: ^-?\d+$, description: SLE minor units }
-        expiresAt: { type: string, format: date-time }
+        expiresAt: { description: "when a payment awaiting payment is deleted (created + PENDING_PAYMENT_RETENTION_DAYS); older rows: their old 15-minute expiry", type: string, format: date-time }
+        processingAt: { description: Monime's payment.processing_started, type: [ string, "null" ], format: date-time }
         completedAt: { type: [ string, "null" ], format: date-time }
         failureReason: { type: [ string, "null" ] }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+        payRequestId: { description: "the pay request this payment was made through (dot: payRequestCode); counts towards it only once COMPLETED", type: [ string, "null" ], format: uuid }
+        paidByName: { description: "first name the paying person gave in the dot (display only, never trusted)", type: [ string, "null" ] }
+        payingForSelf: { description: the dot said the student saved on that phone is paying for themselves (display only), type: boolean }
+        monimeChannelType: { description: "Monime's Payment channel.type from the completed payment: bank | card | momo | wallet", type: [ string, "null" ] }
     Payout:
       type: object
       description: Withdrawal from one of our Monime accounts to a bank (or momo) account.
@@ -3172,7 +3572,7 @@ components:
       enum: [ APPLICANT, STUDENT ]
     PaymentStatus:
       type: string
-      enum: [ INITIATED, PENDING, COMPLETED, FAILED, EXPIRED ]
+      enum: [ INITIATED, PENDING, PROCESSING, COMPLETED, FAILED, EXPIRED ]
     PayoutStatus:
       type: string
       enum: [ REQUESTED, SUBMITTED, PROCESSING, COMPLETED, FAILED ]

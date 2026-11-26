@@ -7,15 +7,18 @@ import { useParams } from "next/navigation";
 import { useState } from "react";
 import { api, call } from "@/api/client";
 import { qk } from "@/api/keys";
-import { CopyValue, DateTime, Money, StatusBadge } from "@/components/format";
+import type { components } from "@/api/schema.gen";
+import { isApiError } from "@/api/errors";
+import { CopyValue, DateTime, Money, PAYMENT_STATUS_LABEL, PaymentStatusBadge, StatusBadge } from "@/components/format";
 import { BackLink, HistoryLink } from "@/components/history-link";
 import { GatedButton, RequireOp, useCanOp } from "@/components/permission";
-import { ErrorState, Field, Fields, LoadingBlock, PageHeader } from "@/components/states";
+import { EmptyState, ErrorState, Field, Fields, LoadingBlock, PageHeader } from "@/components/states";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatSle } from "@/lib/money";
 
-const OPEN = new Set(["INITIATED", "PENDING"]);
+/** Not settled yet: "Check with Monime" applies. */
+const OPEN = new Set(["INITIATED", "PENDING", "PROCESSING"]);
 
 function Timeline({ items }: { items: { label: string; at: string | null; note?: React.ReactNode; muted?: boolean }[] }) {
   return (
@@ -35,8 +38,12 @@ function Timeline({ items }: { items: { label: string; at: string | null; note?:
 function Detail({ id }: { id: string }) {
   const qc = useQueryClient();
   const canOp = useCanOp();
-  const q = useQuery({ queryKey: qk.payment(id), queryFn: () => call(api.GET("/v1/admin/payments/{id}", { params: { path: { id } } })) });
-  const [result, setResult] = useState<{ before: string; after: string } | null>(null);
+  const q = useQuery({
+    queryKey: qk.payment(id),
+    queryFn: () => call(api.GET("/v1/admin/payments/{id}", { params: { path: { id } } })),
+    retry: (n, e) => !(isApiError(e) && e.status === 404) && n < 2,
+  });
+  const [result, setResult] = useState<components["schemas"]["PaymentReconcileResult"] | null>(null);
   const reconcile = useMutation({
     mutationFn: () => call(api.POST("/v1/admin/payments/{id}/reconcile", { params: { path: { id } } })),
     onSuccess: (r) => {
@@ -47,9 +54,22 @@ function Detail({ id }: { id: string }) {
   });
 
   if (q.isPending) return <LoadingBlock rows={8} />;
-  if (q.error) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
+  if (q.error) {
+    // unpaid payments are deleted after 7 days, or when another payment for the same fee completes
+    if (isApiError(q.error) && q.error.status === 404)
+      return (
+        <div className="max-w-5xl">
+          <BackLink href="/payments">Payments</BackLink>
+          <EmptyState title="This payment was removed because it was never paid" className="rounded-md border">
+            Unpaid payments are deleted after 7 days, or as soon as another payment for the same fee is paid. The Audit log keeps what it was.
+          </EmptyState>
+        </div>
+      );
+    return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
+  }
   const p = q.data;
   const open = OPEN.has(p.status);
+  // only rows from before payments stopped expiring can have completed after expiresAt
   const late = p.completedAt && p.completedAt > p.expiresAt;
 
   return (
@@ -59,7 +79,7 @@ function Detail({ id }: { id: string }) {
         <PageHeader
           title={
             <span className="flex flex-wrap items-center gap-2">
-              Payment <span className="font-mono">{p.paymentRef}</span> <StatusBadge status={p.status} />
+              Payment <span className="font-mono">{p.paymentRef}</span> <PaymentStatusBadge status={p.status} />
             </span>
           }
           description={
@@ -82,21 +102,29 @@ function Detail({ id }: { id: string }) {
       </div>
 
       {result && (
-        <Alert>
+        <Alert data-testid="monime-check">
           <AlertTitle>Checked with Monime</AlertTitle>
           <AlertDescription className="flex flex-wrap items-center gap-2">
-            <StatusBadge status={result.before} /> <ArrowRight className="size-3" aria-hidden /> <StatusBadge status={result.after} />
-            <span className="text-muted-foreground">
-              {result.before === result.after
-                ? "No change. Completion only ever comes from Monime's webhook."
-                : "The payment code had expired or was cancelled, so the payment is closed."}
-            </span>
+            {result.before === result.after ? (
+              <>
+                <PaymentStatusBadge status={result.after} />
+                <span className="text-muted-foreground">
+                  Monime has no completion for this payment yet, so it stays {PAYMENT_STATUS_LABEL[result.after].toLowerCase()}. Checking changes nothing:
+                  only Monime&apos;s confirmation (or the nightly reconciliation) marks a payment paid.
+                </span>
+              </>
+            ) : (
+              <>
+                <PaymentStatusBadge status={result.before} /> <ArrowRight className="size-3" aria-hidden /> <PaymentStatusBadge status={result.after} />
+                <span className="text-muted-foreground">Monime&apos;s confirmation arrived meanwhile.</span>
+              </>
+            )}
           </AlertDescription>
         </Alert>
       )}
       {p.status === "EXPIRED" && (
         <p className="text-xs text-muted-foreground">
-          Expired is not final for money: if Monime completes it late, it is still applied (late settlement).
+          Made before 28 Nov 2026, when payments still expired after 15 minutes. If Monime completes it late, it is still applied.
         </p>
       )}
 
@@ -167,16 +195,14 @@ function Detail({ id }: { id: string }) {
             <Timeline
               items={[
                 { label: "Created", at: p.createdAt },
-                {
-                  label: open && p.expiresAt > new Date().toISOString() ? "Expires" : "Hold expired",
-                  at: p.expiresAt,
-                  muted: !open,
-                  note: open && p.expiresAt <= new Date().toISOString() ? "Still open past expiry: the expiry job will close it" : undefined,
-                },
+                ...(p.processingAt ? [{ label: "Processing", at: p.processingAt, note: "Monime started collecting" }] : []),
                 ...(p.completedAt
-                  ? [{ label: "Completed", at: p.completedAt, note: late ? "Late settlement: completed after the hold expired" : undefined }]
+                  ? [{ label: "Paid", at: p.completedAt, note: late ? "Late settlement: completed after its old 15-minute expiry" : undefined }]
                   : []),
-                ...(p.status === "FAILED" || p.status === "EXPIRED" ? [{ label: p.status === "FAILED" ? "Failed" : "Expired", at: p.updatedAt }] : []),
+                ...(p.status === "FAILED" ? [{ label: "Failed", at: p.updatedAt }] : []),
+                ...(p.status === "EXPIRED" ? [{ label: "Expired (old rule)", at: p.expiresAt, muted: true }] : []),
+                // awaiting payment: removed if nobody pays (a PROCESSING one never is)
+                ...(p.status === "PENDING" || p.status === "INITIATED" ? [{ label: "Deleted if unpaid on", at: p.expiresAt, muted: true }] : []),
               ]}
             />
           </CardContent>

@@ -16,7 +16,7 @@ import { useCursorList } from "@/hooks/use-cursor-list";
 import { compact, useUrlFilters } from "@/hooks/use-url-filters";
 import { formatDateTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { lastUpdateLabel, syncHealth } from "../sync-health";
+import { dataFreshnessLabel, lastUpdateLabel, syncHealth } from "../sync-health";
 
 type Event = components["schemas"]["PortalEvent"];
 type Result = components["schemas"]["PortalEventResult"];
@@ -51,7 +51,7 @@ export function useNow(everyMs = 60_000) {
 }
 
 /** "Last update from the portal: 5 min ago", amber after 24 hours without an applied event. */
-export function SyncBadge({ lastAppliedAt, now }: { lastAppliedAt: string | null; now: Date }) {
+export function SyncBadge({ lastAppliedAt, now, data }: { lastAppliedAt: string | null; now: Date; data?: boolean }) {
   const health = syncHealth(lastAppliedAt, now);
   const ok = health === "fresh";
   return (
@@ -68,7 +68,7 @@ export function SyncBadge({ lastAppliedAt, now }: { lastAppliedAt: string | null
       )}
     >
       {ok ? <CircleCheck aria-hidden /> : <AlertTriangle aria-hidden />}
-      {lastUpdateLabel(lastAppliedAt, now)}
+      {data ? dataFreshnessLabel(lastAppliedAt, now) : lastUpdateLabel(lastAppliedAt, now)}
     </Badge>
   );
 }

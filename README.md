@@ -117,6 +117,13 @@ from level 2, last year's tuition (due 2026-01-31, so what's left of it is overd
 students have nothing billed (the "check rate rules" warning), five inactive ones only count with
 "Include inactive students", and 15 applicants pay the application fee. `UNI-2025-0100` came from
 application `APP-2025-4100` and has portal events, receipts and payments that open in payment detail.
+Every fifth student has no email (shown as "—"); the others have one, masked in the list and the CSV.
+
+**Payment lifecycle:** payments don't expire. The "stale" open payments are PROCESSING, half of them for
+over an hour (Reconciliation). PENDING payments show "Deleted if unpaid on …". The audit log has two
+removed unpaid payments (`payment.delete_awaiting`); their links open "This payment was removed because
+it was never paid". One UNMATCHED webhook event is a late Monime payment for the deleted `15999001`.
+The exam clearance rule starts as the migration's placeholder (super admin and bursar can change it).
 
 **Email links:** use `token_hash=invite:<email>` or `recovery:<email>`, e.g.
 `/auth/accept-invite?token_hash=invite:pending@unimak.test&type=invite`. `token_hash=expired` is
@@ -226,3 +233,9 @@ Things the UI would use that the API doesn't offer (or doesn't type) yet:
 5. **openapi-typescript emits `payerKindValues` twice** (inline `Payer.kind` and the `PayerKind`
    schema). `scripts/gen-api.mjs` renames the inline one. Renaming either enum in the spec would
    avoid it.
+6. **`ReconciliationSummary.counts.staleOpenPayments` is still described as "open past expiry"** in
+   `openapi.yaml`. The backend now counts PROCESSING payments with `processingAt` over an hour ago
+   (sorted by `processingAt`), which is what the dashboard shows as "Processing for over an hour".
+7. **"Check with Monime" returns only before/after statuses**, not what Monime said about the payment
+   code (expired or cancelled at Monime is only logged). The detail page says the payment stays as it is.
+

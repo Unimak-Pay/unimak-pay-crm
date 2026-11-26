@@ -37,6 +37,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/c/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Exam pass check (what an invigilator's scanner opens)
+         * @description Re-checks clearance **now** against the current rule, every time, so a screenshot of an
+         *     old pass proves nothing: "✓ Cleared" or "✗ Not cleared", with the student's full name, ID,
+         *     programme and the time checked. No phone, no amounts. `noindex`, `Cache-Control no-store`;
+         *     rate-limited per IP like the dot API.
+         */
+        get: operations["publicExamPass"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/channel/payers/{kind}/{ref}": {
         parameters: {
             query?: never;
@@ -119,7 +142,8 @@ export interface paths {
         put?: never;
         /**
          * Start a payment
-         * @description Places a hold on the obligation and creates a Monime payment code (15 minutes).
+         * @description Creates a PENDING payment (awaiting payment: it never expires and holds nothing; deleted after 7 days if
+         *     unpaid, see docs/payment-lifecycle.md) and a Monime payment code. `expiresAt` = when it is deleted if unpaid.
          *     The payer approves by dialling `ussdCode`. Idempotent per client on `idempotencyKey`:
          *     repeating the call returns the same payment (and retries Monime if it never got through).
          *     Give the payer `paymentRef` to check the status later.
@@ -179,8 +203,12 @@ export interface paths {
         };
         /**
          * Look up a payer and what they owe
-         * @description Fetches from the university portal (cached) and creates any missing obligations.
-         *     Returns the full name and academic details; the phone is masked.
+         * @description Reads our store first (the portal for someone new) and creates any missing obligations.
+         *     - `X-User-Alias` matches the payer's phone, or is missing (dots before 0.2.3, while
+         *       `DOT_ALIAS_REQUIRED` is off): the full name and academic details (`DotPayer`), phone masked.
+         *     - Another number (a sponsor paying for someone): only what's needed to pay (`DotPayerShort`:
+         *       first name and last initial, `limited: true`) with the same obligations. After too many
+         *       wrong numbers from one IP or for one ID, it answers short without checking.
          */
         get: operations["dotGetPayer"];
         put?: never;
@@ -200,7 +228,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Validate an amount without creating anything */
+        /**
+         * Validate an amount without creating anything
+         * @description Works for anyone (sponsors too); `X-User-Alias` isn't checked.
+         */
         post: operations["dotPostQuote"];
         delete?: never;
         options?: never;
@@ -219,11 +250,19 @@ export interface paths {
         put?: never;
         /**
          * Start a payment and get the order for Dash's payment sheet
-         * @description Holds the amount on the obligation (15 minutes) and returns `order` and `financialAccountId`
+         * @description Records a PENDING payment (never expires, holds nothing; `expiresAt` = when it is deleted if still unpaid)
+         *     and returns `order` and `financialAccountId`
          *     to pass unchanged to `dash.payments.request()`. No Monime call is made here.
          *     Idempotent on the `Idempotency-Key` header: a retry returns the same payment and order
          *     (409 `IDEMPOTENCY_CONFLICT` if the key was used for a different obligation or amount).
-         *     Show the payer `paymentRef` for later status checks.
+         *     Show the payer `paymentRef` for later status checks. Works for anyone (sponsors too);
+         *     `X-User-Alias` isn't checked.
+         *
+         *     Optional (dot 0.2.3+): `payRequestCode` pays through a pay request (it must be open, not
+         *     expired and for this obligation: 404 / 400 / 409 `INVALID_STATE`; a retry with the same key
+         *     replays even after the request closed). The payment counts towards the request only once
+         *     Monime completes it. `paidByName` (first name, display only) and `payingForSelf` feed
+         *     `paidBy` in history and receipts.
          */
         post: operations["dotPostPayment"];
         delete?: never;
@@ -252,6 +291,141 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/dot/payers/{kind}/{ref}/payments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Payment history
+         * @description Every payment towards the payer's fees from any channel, newest first: all COMPLETED ones,
+         *     those still open, and FAILED / EXPIRED ones from the last 30 days. `X-User-Alias` must match.
+         *     `academicYear` is the latest `YYYY/YY` period of the payer's obligations (else their latest
+         *     period; null with none); `totalPaid` = COMPLETED payments on obligations in that period.
+         *     Only Monime's confirmation makes a payment COMPLETED.
+         */
+        get: operations["dotPaymentHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/dot/payments/{paymentRef}/receipt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Receipt of a completed payment
+         * @description By our 8-digit `paymentRef` (random), so the result page can open it right after paying.
+         *     404 until Monime completed the payment. `verifyUrl` is the public `/r/{verifyCode}` page
+         *     (show it as a QR code). `pdfUrl` is null for now.
+         */
+        get: operations["dotGetReceipt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/dot/payers/{kind}/{ref}/clearance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Exam clearance
+         * @description Students only (applicants: 404). `X-User-Alias` must match. Evaluated live from the ledger
+         *     and the finance office's rule (`GET /v1/admin/clearance-policy`): NOT_CLEARED lists the
+         *     `blocking` fees and what's `outstanding` (money held by an open payment isn't paid yet).
+         *     CLEARED carries a pass: `passCode` and `verifyUrl` (`/c/{passCode}`, which re-checks live).
+         *     The pass code stays the same for the student and period.
+         */
+        get: operations["dotGetClearance"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/dot/pay-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask someone to pay (create a pay request)
+         * @description `X-User-Alias` must match the student's phone (403 `ALIAS_REQUIRED` / `ALIAS_MISMATCH`).
+         *     Idempotent on `Idempotency-Key` like payments (same key, different body: 409
+         *     `IDEMPOTENCY_CONFLICT`). `amount` above the fee's payable: 422 `AMOUNT_EXCEEDS_PAYABLE`; a
+         *     paid fee: 409 `OBLIGATION_SETTLED`; at most 20 open requests per payer (400 `VALIDATION`).
+         *     Expires after 30 days, or on the fee's due date if sooner, never less than 3 days.
+         */
+        post: operations["dotCreatePayRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/dot/pay-requests/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A pay request, for the sponsor's page
+         * @description No alias match needed: the code is the secret. The first call records `openedAt`.
+         *     `requester` is only a first name and programme.
+         */
+        get: operations["dotGetPayRequest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/dot/payers/{kind}/{ref}/pay-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A payer's pay requests, newest first
+         * @description `X-User-Alias` must match the payer's phone.
+         */
+        get: operations["dotListPayRequests"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/monime": {
         parameters: {
             query?: never;
@@ -264,7 +438,7 @@ export interface paths {
         /**
          * Monime webhook
          * @description Signed with `Monime-Signature: t=<unix>,v1=<base64 HMAC-SHA256(secret, "<t>_" + raw body)>`.
-         *     Events: `payment.processing_completed`, `internal_transfer.completed|failed`,
+         *     Events: `payment.processing_started` (→ PROCESSING), `payment.processing_completed`, `internal_transfer.completed|failed`,
          *     `payout.completed|failed`, `financial_account.credited|debited`. Deduplicated on
          *     `event.id`; business mismatches are acknowledged (200) and queued for reconciliation.
          */
@@ -368,8 +542,9 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Expire open payments past expiresAt; delete USSD sessions older than 24 h
-         * @description Also runs every 5 minutes in the database (Supabase pg_cron) and nightly.
+         * Payment housekeeping; delete USSD sessions older than 24 h
+         * @description Payments don't expire. PROCESSING with no completion for 24 h goes back to PENDING; payments still
+         *     awaiting payment after PENDING_PAYMENT_RETENTION_DAYS are deleted (audited). Also runs nightly.
          */
         get: operations["cronExpirePayments"];
         put?: never;
@@ -587,7 +762,7 @@ export interface paths {
          *     rows (400 `VALIDATION` beyond that). Cells starting with `= + - @` are prefixed with `'`.
          *     UTF-8 with BOM. Every export is audited (`payers.export`). Needs `payers.read` and `payments.export`.
          *
-         *     Columns: kind, ref, full_name, phone_masked, program, department, department_name, faculty, level,
+         *     Columns: kind, ref, full_name, phone_masked, email_masked, program, department, department_name, faculty, level,
          *     enrolment_status, applicant_status, obligations, billed_sle, collected_sle, balance_sle, standing,
          *     overdue, overdue_sle, last_payment_at, payer_id.
          */
@@ -615,6 +790,33 @@ export interface paths {
          */
         get: operations["adminGetPayer"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/clearance-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The exam-clearance rule
+         * @description `placeholder: true` until the finance office sets the real rule.
+         */
+        get: operations["adminGetClearancePolicy"];
+        /**
+         * Set the exam-clearance rule
+         * @description A student is cleared when every obligation of `feeTypeCodes` in `period`, and (if
+         *     `includeOverdue`) every obligation past its fee's due date, has a zero balance. Unknown fee
+         *     type codes, or a rule that blocks nothing, are rejected (400). Clears `placeholder`. Audited
+         *     (`clearance_policy.update`). Passes already issued re-check against the new rule.
+         */
+        put: operations["adminPutClearancePolicy"];
         post?: never;
         delete?: never;
         options?: never;
@@ -736,8 +938,9 @@ export interface paths {
          * @description - **collected**: COMPLETED payments by `completedAt` in the range (a late settlement counts on
          *       the day Monime completed it). `monimeFees + platformFees + net = amount`.
          *     - **byDay**: every day of the range, zero-filled. Days are UTC (= Africa/Freetown).
-         *     - **payments**: the funnel of payments *started* in the range, by current status. An open
-         *       payment past expiry counts as expired.
+         *     - **payments**: the funnel of payments *started* in the range, by current status (pending =
+         *       awaiting payment, processing = Monime is processing it). Payments don't expire; unpaid ones are
+         *       deleted after 7 days, so they leave the funnel.
          *     - **byFaculty** / **byDepartment**: collected, by the payer's department and that department's
          *       *current* faculty (`facultyCode: null` = department without a faculty yet, or no department).
          *     - **commission** / **payouts**: transfers / payouts created in the range. They are `null` unless
@@ -831,7 +1034,7 @@ export interface paths {
         put?: never;
         /**
          * Ask Monime about an open payment
-         * @description Closes it if its payment code expired or was cancelled. Completion only ever comes from Monime's webhook.
+         * @description Reports what Monime says about the payment code; never changes the payment (payments don't expire). Completion only ever comes from Monime's webhook or the nightly reconciliation.
          */
         post: operations["adminReconcilePayment"];
         delete?: never;
@@ -1504,6 +1707,11 @@ export interface components {
             fullName: string;
             /** @example +232*****001 */
             maskedPhone: string | null;
+            /**
+             * @description null when the portal has no email
+             * @example a***@gmail.com
+             */
+            maskedEmail: string | null;
             /** @example BSC-CS */
             programCode: string;
             /** @example BSC-CS · Level 1 */
@@ -1528,6 +1736,163 @@ export interface components {
             applicantStatus: string | null;
             /** @description true when the portal was down and this is the last snapshot */
             stale: boolean;
+        };
+        /** @description The lookup for someone whose X-User-Alias does not match (a sponsor): enough to pay, nothing more. */
+        DotPayerShort: {
+            /** @enum {string} */
+            kind: "applicant" | "student";
+            ref: string;
+            /**
+             * @description First name and last initial
+             * @example Abdul K.
+             */
+            shortName: string;
+            /** @constant */
+            limited: true;
+            stale: boolean;
+        };
+        DotPaymentRequest: {
+            /** Format: uuid */
+            obligationId: string;
+            amount: components["schemas"]["MinorAmount"];
+            /** @description Pay through this pay request (dot 0.2.3+). */
+            payRequestCode?: string;
+            /** @description Payer's first name, display only; anything after the first word is dropped. */
+            paidByName?: string;
+            /** @description true when the student saved on that phone is paying; display only. Default false. */
+            payingForSelf?: boolean;
+        };
+        /** @description Who paid, as the dot said (display only): `paidByName` and `payingForSelf` from POST /v1/dot/payments. Never a phone. */
+        PaidBy: {
+            /** @example Fatmata */
+            name: string | null;
+            self: boolean;
+        };
+        /**
+         * @description From Monime's Payment channel.type (momo, card, bank, wallet); null if unknown.
+         * @enum {string|null}
+         */
+        PaymentMethodLabel: "Mobile money" | "Card" | "Bank" | "Wallet" | null;
+        PaymentHistory: {
+            /** @example 2026/27 */
+            academicYear: string | null;
+            totalPaid: components["schemas"]["Money"];
+            payments: {
+                paymentRef: components["schemas"]["PaymentRef"];
+                /** Format: uuid */
+                obligationId: string;
+                feeName: string;
+                period: string;
+                amount: components["schemas"]["Money"];
+                status: components["schemas"]["PaymentStatus"];
+                paidBy: components["schemas"]["PaidBy"];
+                method: components["schemas"]["PaymentMethodLabel"];
+                receiptNumber: string | null;
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: date-time */
+                completedAt: string | null;
+            }[];
+        };
+        DotReceipt: {
+            /** @example UNIMAK-2026-000123 */
+            receiptNumber: string;
+            paymentRef: components["schemas"]["PaymentRef"];
+            amount: components["schemas"]["Money"];
+            feeName: string;
+            period: string;
+            payer: {
+                /** @enum {string} */
+                kind: "applicant" | "student";
+                ref: string;
+                fullName: string;
+                programLine: string;
+            };
+            paidBy: components["schemas"]["PaidBy"];
+            method: components["schemas"]["PaymentMethodLabel"];
+            /** Format: date-time */
+            issuedAt: string;
+            /** Format: uri */
+            verifyUrl: string;
+            /** @description Not made yet. */
+            pdfUrl: null;
+        };
+        Clearance: {
+            /** @enum {string} */
+            status: "CLEARED" | "NOT_CLEARED";
+            exam: {
+                name: string;
+                period: string;
+            };
+            outstanding: components["schemas"]["Money"];
+            blocking: {
+                /** Format: uuid */
+                obligationId: string;
+                feeName: string;
+                balance: components["schemas"]["Money"];
+            }[];
+            /** @example 7KQ2MX9P */
+            passCode: string | null;
+            /** Format: uri */
+            verifyUrl: string | null;
+            /** Format: date-time */
+            issuedAt: string | null;
+        };
+        ClearancePolicy: {
+            /** @constant */
+            id: "current";
+            examName: string;
+            period: string;
+            feeTypeCodes: string[];
+            includeOverdue: boolean;
+            /** @description true until the finance office sets the real rule */
+            placeholder: boolean;
+            updatedBy: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        PayRequest: {
+            /** @example K7PQ2XA */
+            code: string;
+            /**
+             * Format: uri
+             * @description `${DOT_LINK}/sponsor?request=&kind=&ref=&fee=&amount=` (amount empty when null)
+             */
+            shareUrl: string;
+            /** Format: uuid */
+            obligationId: string;
+            feeName: string;
+            amount: components["schemas"]["Money"] | null;
+            paid: components["schemas"]["Money"];
+            /**
+             * @description From its COMPLETED payments only. PAID: reached `amount`, or the fee was paid off with its
+             *     help; a fee paid off without it reads EXPIRED.
+             * @enum {string}
+             */
+            status: "OPEN" | "PARTLY_PAID" | "PAID" | "CANCELLED" | "EXPIRED";
+            message: string;
+            requester: {
+                /** @enum {string} */
+                kind: "applicant" | "student";
+                ref: string;
+                firstName: string;
+                /** @example BSC-CS · Level 1 */
+                programLine: string;
+            };
+            recipientName: string | null;
+            contributions: {
+                paymentRef: components["schemas"]["PaymentRef"];
+                name: string | null;
+                amount: components["schemas"]["Money"];
+                /** Format: date-time */
+                paidAt: string;
+            }[];
+            /** Format: date-time */
+            openedAt: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string;
         };
         DotAmountRequest: {
             /** Format: uuid */
@@ -1615,6 +1980,11 @@ export interface components {
             fullName: string;
             /** @example +23276100001 */
             phone: string;
+            /**
+             * Format: email
+             * @description Optional. Absent: we keep the email we hold. null: none (clears it).
+             */
+            email?: string | null;
             /** @example BSC-CS */
             programCode: string;
             /** @example COMPUTER-SCI */
@@ -1638,6 +2008,11 @@ export interface components {
             applicationRef?: string | null;
             fullName: string;
             phone: string;
+            /**
+             * Format: email
+             * @description Optional. Absent: we keep the email we hold. null: none (clears it).
+             */
+            email?: string | null;
             programCode: string;
             department: string;
             level: number;
@@ -1771,6 +2146,8 @@ export interface components {
             fullName: string;
             /** @example +232*****456 */
             maskedPhone: string;
+            /** @example a***@gmail.com */
+            maskedEmail: string | null;
             programCode: string;
             department: string | null;
             departmentName: string | null;
@@ -1804,6 +2181,8 @@ export interface components {
                 fullName: string;
                 /** @description Full number */
                 phone: string;
+                /** @description Full email, when the portal has one */
+                email: string | null;
                 programCode: string;
                 department: string | null;
                 departmentName: string | null;
@@ -1937,7 +2316,7 @@ export interface components {
             }[];
         };
         /** @enum {string} */
-        Permission: "fees.read" | "fees.manage" | "instalments.manage" | "payers.read" | "payers.adjust" | "payments.read" | "payments.export" | "payments.refund" | "payments.reconcile" | "receipts.resend" | "accounts.read" | "accounts.manage" | "payouts.read" | "payouts.manage" | "transfers.read" | "transfers.retry" | "reconciliation.read" | "reconciliation.manage" | "outbox.read" | "outbox.retry" | "reports.read" | "audit.read" | "users.manage" | "settings.manage" | "academics.manage" | "portal.read";
+        Permission: "fees.read" | "fees.manage" | "instalments.manage" | "payers.read" | "payers.adjust" | "payments.read" | "payments.export" | "payments.refund" | "payments.reconcile" | "receipts.resend" | "accounts.read" | "accounts.manage" | "payouts.read" | "payouts.manage" | "transfers.read" | "transfers.retry" | "reconciliation.read" | "reconciliation.manage" | "outbox.read" | "outbox.retry" | "reports.read" | "audit.read" | "users.manage" | "settings.manage" | "academics.manage" | "portal.read" | "clearance.manage";
         CountAmount: {
             count?: number;
             /** @description SLE minor units */
@@ -1950,7 +2329,7 @@ export interface components {
                 message: string;
                 details?: {
                     [key: string]: unknown;
-                };
+                } | null;
             };
         };
         ValidationError: {
@@ -2536,8 +2915,16 @@ export interface components {
             platformFee: string;
             /** @description SLE minor units */
             netAmount: string;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description when a payment awaiting payment is deleted (created + PENDING_PAYMENT_RETENTION_DAYS); older rows: their old 15-minute expiry
+             */
             expiresAt: string;
+            /**
+             * Format: date-time
+             * @description Monime's payment.processing_started
+             */
+            processingAt: string | null;
             /** Format: date-time */
             completedAt: string | null;
             failureReason: string | null;
@@ -2545,6 +2932,17 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+            /**
+             * Format: uuid
+             * @description the pay request this payment was made through (dot: payRequestCode); counts towards it only once COMPLETED
+             */
+            payRequestId: string | null;
+            /** @description first name the paying person gave in the dot (display only, never trusted) */
+            paidByName: string | null;
+            /** @description the dot said the student saved on that phone is paying for themselves (display only) */
+            payingForSelf: boolean;
+            /** @description Monime's Payment channel.type from the completed payment: bank | card | momo | wallet */
+            monimeChannelType: string | null;
         };
         /** @description Withdrawal from one of our Monime accounts to a bank (or momo) account. */
         Payout: {
@@ -2735,7 +3133,7 @@ export interface components {
         /** @enum {string} */
         PayerKind: "APPLICANT" | "STUDENT";
         /** @enum {string} */
-        PaymentStatus: "INITIATED" | "PENDING" | "COMPLETED" | "FAILED" | "EXPIRED";
+        PaymentStatus: "INITIATED" | "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "EXPIRED";
         /** @enum {string} */
         PayoutStatus: "REQUESTED" | "SUBMITTED" | "PROCESSING" | "COMPLETED" | "FAILED";
         /** @enum {string} */
@@ -2810,6 +3208,27 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /**
+         * @description `ALIAS_REQUIRED` (no `X-User-Alias`) or `ALIAS_MISMATCH` (another number). `message` is written
+         *     for the student; show it as it is.
+         */
+        AliasForbidden: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                /**
+                 * @example {
+                 *       "error": {
+                 *         "code": "ALIAS_MISMATCH",
+                 *         "message": "This ID isn't linked to the Dash number you're using. Use the number the university has for you, or contact the finance office.",
+                 *         "details": null
+                 *       }
+                 *     }
+                 */
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description Amount or rule not acceptable */
         Unprocessable: {
             headers: {
@@ -2864,6 +3283,15 @@ export interface components {
          */
         FacultyFilter: string;
         PayerKind: "applicant" | "student";
+        /**
+         * @description Dot 0.2.3+: the Dash account's phone number (or email when it has none), from Dash sign-in,
+         *     e.g. `+232 76 123456`. Phones are compared on their national number (`076123456`,
+         *     `23276123456` and `+232 76 123456` are the same); an email is compared with the email the
+         *     portal gave us, ignoring case.
+         *     A check, not a login: the dot sets it itself. Failed matches are limited per IP and per ID;
+         *     it is never returned and only logged masked.
+         */
+        UserAlias: string;
         PayerRef: string;
         /** @description One fee. */
         AnalyticsFeeId: string;
@@ -2970,6 +3398,39 @@ export interface operations {
                     "text/html": string;
                 };
             };
+        };
+    };
+    publicExamPass: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The pass code */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The live check (cleared or not) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description Unknown code */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            429: components["responses"]["RateLimited"];
         };
     };
     channelGetPayer: {
@@ -3192,7 +3653,17 @@ export interface operations {
     dotGetPayer: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description Dot 0.2.3+: the Dash account's phone number (or email when it has none), from Dash sign-in,
+                 *     e.g. `+232 76 123456`. Phones are compared on their national number (`076123456`,
+                 *     `23276123456` and `+232 76 123456` are the same); an email is compared with the email the
+                 *     portal gave us, ignoring case.
+                 *     A check, not a login: the dot sets it itself. Failed matches are limited per IP and per ID;
+                 *     it is never returned and only logged masked.
+                 */
+                "X-User-Alias"?: components["parameters"]["UserAlias"];
+            };
             path: {
                 kind: components["parameters"]["PayerKind"];
                 ref: components["parameters"]["PayerRef"];
@@ -3208,7 +3679,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        payer: components["schemas"]["DotPayer"];
+                        payer: components["schemas"]["DotPayer"] | components["schemas"]["DotPayerShort"];
                         obligations: components["schemas"]["Obligation"][];
                     };
                 };
@@ -3221,7 +3692,17 @@ export interface operations {
     dotPostQuote: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description Dot 0.2.3+: the Dash account's phone number (or email when it has none), from Dash sign-in,
+                 *     e.g. `+232 76 123456`. Phones are compared on their national number (`076123456`,
+                 *     `23276123456` and `+232 76 123456` are the same); an email is compared with the email the
+                 *     portal gave us, ignoring case.
+                 *     A check, not a login: the dot sets it itself. Failed matches are limited per IP and per ID;
+                 *     it is never returned and only logged masked.
+                 */
+                "X-User-Alias"?: components["parameters"]["UserAlias"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -3257,6 +3738,15 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
+                /**
+                 * @description Dot 0.2.3+: the Dash account's phone number (or email when it has none), from Dash sign-in,
+                 *     e.g. `+232 76 123456`. Phones are compared on their national number (`076123456`,
+                 *     `23276123456` and `+232 76 123456` are the same); an email is compared with the email the
+                 *     portal gave us, ignoring case.
+                 *     A check, not a login: the dot sets it itself. Failed matches are limited per IP and per ID;
+                 *     it is never returned and only logged masked.
+                 */
+                "X-User-Alias"?: components["parameters"]["UserAlias"];
                 /** @description A new random key per payment (e.g. `dash.crypto.randomUUID()`), reused on retries. */
                 "Idempotency-Key": string;
             };
@@ -3265,7 +3755,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["DotAmountRequest"];
+                "application/json": components["schemas"]["DotPaymentRequest"];
             };
         };
         responses: {
@@ -3299,7 +3789,17 @@ export interface operations {
     dotGetPaymentStatus: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description Dot 0.2.3+: the Dash account's phone number (or email when it has none), from Dash sign-in,
+                 *     e.g. `+232 76 123456`. Phones are compared on their national number (`076123456`,
+                 *     `23276123456` and `+232 76 123456` are the same); an email is compared with the email the
+                 *     portal gave us, ignoring case.
+                 *     A check, not a login: the dot sets it itself. Failed matches are limited per IP and per ID;
+                 *     it is never returned and only logged masked.
+                 */
+                "X-User-Alias"?: components["parameters"]["UserAlias"];
+            };
             path: {
                 ref: string;
             };
@@ -3316,6 +3816,239 @@ export interface operations {
                     "application/json": components["schemas"]["PaymentStatusView"];
                 };
             };
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    dotPaymentHistory: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Dot 0.2.3+: the Dash account's phone number (or email when it has none), from Dash sign-in,
+                 *     e.g. `+232 76 123456`. Phones are compared on their national number (`076123456`,
+                 *     `23276123456` and `+232 76 123456` are the same); an email is compared with the email the
+                 *     portal gave us, ignoring case.
+                 *     A check, not a login: the dot sets it itself. Failed matches are limited per IP and per ID;
+                 *     it is never returned and only logged masked.
+                 */
+                "X-User-Alias"?: components["parameters"]["UserAlias"];
+            };
+            path: {
+                kind: components["parameters"]["PayerKind"];
+                ref: components["parameters"]["PayerRef"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description History */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentHistory"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["AliasForbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    dotGetReceipt: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Dot 0.2.3+: the Dash account's phone number (or email when it has none), from Dash sign-in,
+                 *     e.g. `+232 76 123456`. Phones are compared on their national number (`076123456`,
+                 *     `23276123456` and `+232 76 123456` are the same); an email is compared with the email the
+                 *     portal gave us, ignoring case.
+                 *     A check, not a login: the dot sets it itself. Failed matches are limited per IP and per ID;
+                 *     it is never returned and only logged masked.
+                 */
+                "X-User-Alias"?: components["parameters"]["UserAlias"];
+            };
+            path: {
+                paymentRef: components["schemas"]["PaymentRef"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Receipt */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DotReceipt"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    dotGetClearance: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Dot 0.2.3+: the Dash account's phone number (or email when it has none), from Dash sign-in,
+                 *     e.g. `+232 76 123456`. Phones are compared on their national number (`076123456`,
+                 *     `23276123456` and `+232 76 123456` are the same); an email is compared with the email the
+                 *     portal gave us, ignoring case.
+                 *     A check, not a login: the dot sets it itself. Failed matches are limited per IP and per ID;
+                 *     it is never returned and only logged masked.
+                 */
+                "X-User-Alias"?: components["parameters"]["UserAlias"];
+            };
+            path: {
+                kind: components["parameters"]["PayerKind"];
+                ref: components["parameters"]["PayerRef"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Clearance */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Clearance"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["AliasForbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    dotCreatePayRequest: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Dot 0.2.3+: the Dash account's phone number (or email when it has none), from Dash sign-in,
+                 *     e.g. `+232 76 123456`. Phones are compared on their national number (`076123456`,
+                 *     `23276123456` and `+232 76 123456` are the same); an email is compared with the email the
+                 *     portal gave us, ignoring case.
+                 *     A check, not a login: the dot sets it itself. Failed matches are limited per IP and per ID;
+                 *     it is never returned and only logged masked.
+                 */
+                "X-User-Alias"?: components["parameters"]["UserAlias"];
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    kind: "student" | "applicant";
+                    ref: string;
+                    /** Format: uuid */
+                    obligationId: string;
+                    /** @description null = "whatever you can" */
+                    amount?: components["schemas"]["MinorAmount"] | null;
+                    /** @description Trimmed; 1-280 characters after trimming. */
+                    message: string;
+                    recipientName?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description The request (or the existing one on a retry) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayRequest"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["AliasForbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    dotGetPayRequest: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Dot 0.2.3+: the Dash account's phone number (or email when it has none), from Dash sign-in,
+                 *     e.g. `+232 76 123456`. Phones are compared on their national number (`076123456`,
+                 *     `23276123456` and `+232 76 123456` are the same); an email is compared with the email the
+                 *     portal gave us, ignoring case.
+                 *     A check, not a login: the dot sets it itself. Failed matches are limited per IP and per ID;
+                 *     it is never returned and only logged masked.
+                 */
+                "X-User-Alias"?: components["parameters"]["UserAlias"];
+            };
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The request */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayRequest"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    dotListPayRequests: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description Dot 0.2.3+: the Dash account's phone number (or email when it has none), from Dash sign-in,
+                 *     e.g. `+232 76 123456`. Phones are compared on their national number (`076123456`,
+                 *     `23276123456` and `+232 76 123456` are the same); an email is compared with the email the
+                 *     portal gave us, ignoring case.
+                 *     A check, not a login: the dot sets it itself. Failed matches are limited per IP and per ID;
+                 *     it is never returned and only logged masked.
+                 */
+                "X-User-Alias"?: components["parameters"]["UserAlias"];
+            };
+            path: {
+                kind: components["parameters"]["PayerKind"];
+                ref: components["parameters"]["PayerRef"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Requests */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        requests: components["schemas"]["PayRequest"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["AliasForbidden"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
         };
@@ -3587,8 +4320,10 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        expired?: number;
+                        processingReset?: number;
+                        pendingDeleted?: number;
                         ussdSessionsDeleted?: number;
+                        portalEventsDeleted?: number;
                     };
                 };
             };
@@ -3615,8 +4350,10 @@ export interface operations {
                         /** Format: uuid */
                         runId?: string;
                         housekeeping?: {
-                            expired?: number;
+                            processingReset?: number;
+                            pendingDeleted?: number;
                             ussdSessionsDeleted?: number;
+                            portalEventsDeleted?: number;
                         };
                         outbox?: {
                             [key: string]: number;
@@ -4058,6 +4795,68 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
+    adminGetClearancePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rule */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClearancePolicy"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    adminPutClearancePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @example First semester exams */
+                    examName: string;
+                    /** @example 2026/27 */
+                    period: string;
+                    /**
+                     * @example [
+                     *       "TUITION"
+                     *     ]
+                     */
+                    feeTypeCodes: string[];
+                    includeOverdue: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description The new rule */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClearancePolicy"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
     adminAuditLog: {
         parameters: {
             query?: {
@@ -4405,7 +5204,9 @@ export interface operations {
                             started?: number;
                             completed?: components["schemas"]["CountAmount"];
                             pending?: components["schemas"]["CountAmount"];
+                            processing?: components["schemas"]["CountAmount"];
                             failed?: components["schemas"]["CountAmount"];
+                            /** @description Payments made before payments stopped expiring (2026-11-28) */
                             expired?: components["schemas"]["CountAmount"];
                             completionRate?: number | null;
                         };
@@ -5737,7 +6538,7 @@ export interface operations {
                     /** Format: uuid */
                     payoutId?: string;
                     /** @enum {string} */
-                    outcome: "completed" | "failed" | "expired";
+                    outcome: "processing" | "completed" | "failed" | "expired";
                     amount?: components["schemas"]["MinorAmount"];
                     /** @description Reported masked, like Monime. */
                     payerPhone?: string;
@@ -5763,6 +6564,7 @@ type ReadonlyArray<T> = [
 ] extends [
     unknown[]
 ] ? Readonly<Exclude<T, undefined>> : Readonly<Exclude<T, undefined>[]>;
+export const pathsV1DotPayRequestsPostRequestBodyContentApplicationJsonKindValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/dot/pay-requests"]["post"]["requestBody"]["content"]["application/json"]["kind"]> = ["student", "applicant"];
 export const pathsV1PortalEventsPostResponses200ContentApplicationJsonResultsResultValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/portal/events"]["post"]["responses"]["200"]["content"]["application/json"]["results"]["result"]> = ["APPLIED", "DUPLICATE", "STALE", "REJECTED"];
 export const pathsV1AdminPortalEventsGetParametersQueryTypeValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/portal-events"]["get"]["parameters"]["query"]["type"]> = ["applicant.upserted", "student.upserted"];
 export const pathsV1AdminPortalEventsGetParametersQueryResultValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/portal-events"]["get"]["parameters"]["query"]["result"]> = ["APPLIED", "STALE", "REJECTED"];
@@ -5770,8 +6572,13 @@ export const pathsV1AdminPayersNeedsReviewGetParametersQueryStatusValues: Readon
 export const pathsV1AdminFeeTypesPostRequestBodyContentApplicationJsonPayerKindValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/fee-types"]["post"]["requestBody"]["content"]["application/json"]["payerKind"]> = ["APPLICANT", "STUDENT"];
 export const pathsV1AdminFeeTypesPostRequestBodyContentApplicationJsonRecurrenceValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/fee-types"]["post"]["requestBody"]["content"]["application/json"]["recurrence"]> = ["ONCE", "PER_YEAR"];
 export const pathsV1AdminFeesIdPreviewGetParametersQueryKindValues: ReadonlyArray<FlattenedDeepRequired<paths>["/v1/admin/fees/{id}/preview"]["get"]["parameters"]["query"]["kind"]> = ["applicant", "student"];
-export const pathsDevMonimeSimulateWebhookPostRequestBodyContentApplicationJsonOutcomeValues: ReadonlyArray<FlattenedDeepRequired<paths>["/dev/monime/simulate-webhook"]["post"]["requestBody"]["content"]["application/json"]["outcome"]> = ["completed", "failed", "expired"];
+export const pathsDevMonimeSimulateWebhookPostRequestBodyContentApplicationJsonOutcomeValues: ReadonlyArray<FlattenedDeepRequired<paths>["/dev/monime/simulate-webhook"]["post"]["requestBody"]["content"]["application/json"]["outcome"]> = ["processing", "completed", "failed", "expired"];
 export const dotPayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DotPayer"]["kind"]> = ["applicant", "student"];
+export const dotPayerShortKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DotPayerShort"]["kind"]> = ["applicant", "student"];
+export const dotReceiptPayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DotReceipt"]["payer"]["kind"]> = ["applicant", "student"];
+export const clearanceStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Clearance"]["status"]> = ["CLEARED", "NOT_CLEARED"];
+export const payRequestStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayRequest"]["status"]> = ["OPEN", "PARTLY_PAID", "PAID", "CANCELLED", "EXPIRED"];
+export const payRequestRequesterKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayRequest"]["requester"]["kind"]> = ["applicant", "student"];
 export const repriceReportSkippedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RepriceReport"]["skipped"]["reason"]> = ["PAID", "HAS_PAYMENTS", "PAYMENT_IN_PROGRESS", "NOT_ELIGIBLE", "NO_RATE_RULE", "AMBIGUOUS_RATE_RULE"];
 export const repricePayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RepricePayer"]["kind"]> = ["applicant", "student"];
 export const portalEventInTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PortalEventIn"]["type"]> = ["applicant.upserted", "student.upserted"];
@@ -5789,7 +6596,7 @@ export const payerDetailObligationsStatusValues: ReadonlyArray<FlattenedDeepRequ
 export const payerDetailObligationsFeeStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayerDetail"]["obligations"]["fee"]["status"]> = ["DRAFT", "ACTIVE", "CLOSED"];
 export const payerDetailObligationsEntriesTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayerDetail"]["obligations"]["entries"]["type"]> = ["CHARGE", "PAYMENT", "ADJUSTMENT", "REFUND"];
 export const payerDetailPortalEventsResultValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayerDetail"]["portalEvents"]["result"]> = ["APPLIED", "STALE", "REJECTED"];
-export const permissionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Permission"]> = ["fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export", "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "accounts.manage", "payouts.read", "payouts.manage", "transfers.read", "transfers.retry", "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage", "academics.manage", "portal.read"];
+export const permissionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Permission"]> = ["fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export", "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "accounts.manage", "payouts.read", "payouts.manage", "transfers.read", "transfers.retry", "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage", "academics.manage", "portal.read", "clearance.manage"];
 export const payer_payerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Payer"]["kind"]> = ["applicant", "student"];
 export const obligationStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Obligation"]["status"]> = ["OPEN", "PAID"];
 export const paymentStatusViewPayerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PaymentStatusView"]["payer"]["kind"]> = ["applicant", "student"];
@@ -5804,7 +6611,7 @@ export const financialAccountPurposeValues: ReadonlyArray<FlattenedDeepRequired<
 export const ledgerEntryTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["LedgerEntryType"]> = ["CHARGE", "PAYMENT", "ADJUSTMENT", "REFUND"];
 export const outboxStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OutboxStatus"]> = ["PENDING", "SENT", "DEAD"];
 export const payerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayerKind"]> = ["APPLICANT", "STUDENT"];
-export const paymentStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PaymentStatus"]> = ["INITIATED", "PENDING", "COMPLETED", "FAILED", "EXPIRED"];
+export const paymentStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PaymentStatus"]> = ["INITIATED", "PENDING", "PROCESSING", "COMPLETED", "FAILED", "EXPIRED"];
 export const payoutStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PayoutStatus"]> = ["REQUESTED", "SUBMITTED", "PROCESSING", "COMPLETED", "FAILED"];
 export const portalEventResultValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PortalEventResult"]> = ["APPLIED", "STALE", "REJECTED"];
 export const reconciliationItemStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReconciliationItemStatus"]> = ["OPEN", "AUTO_RESOLVED", "RESOLVED"];

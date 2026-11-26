@@ -89,6 +89,14 @@ export function maskPhone(phone: string): string {
   return phone.slice(0, 4) + "*".repeat(phone.length - 7) + phone.slice(-3);
 }
 
+/** "Aminata.Kamara@Gmail.com" → "a***@gmail.com" (the backend's maskEmail) */
+export function maskEmail(email: string | null | undefined): string | null {
+  const e = (email ?? "").trim().toLowerCase();
+  const at = e.lastIndexOf("@");
+  if (at < 1 || at === e.length - 1) return null;
+  return `${e.charAt(0)}***${e.slice(at)}`;
+}
+
 export function createAnalytics(getDb: () => Db, now: () => string) {
   const dept = (code: string | null) => {
     const db = getDb();
@@ -264,7 +272,7 @@ export function createAnalytics(getDb: () => Db, now: () => string) {
             .at(-1) ?? null;
         const d = dept(x.p.department);
         return {
-          id: x.p.id, kind: x.p.kind, ref: x.p.ref, fullName: x.p.fullName, maskedPhone: maskPhone(x.p.phone), programCode: x.p.programCode,
+          id: x.p.id, kind: x.p.kind, ref: x.p.ref, fullName: x.p.fullName, maskedPhone: maskPhone(x.p.phone), maskedEmail: maskEmail(x.p.email), programCode: x.p.programCode,
           department: x.p.department, departmentName: d.departmentName, facultyCode: d.facultyCode, level: x.p.level,
           enrolmentStatus: x.p.enrolmentStatus, applicantStatus: x.p.applicantStatus, obligations: x.obligations,
           billed: x.billed.toString(), collected: x.collected.toString(), balance: x.outstanding.toString(), standing: standing(x),
@@ -308,12 +316,12 @@ export function createAnalytics(getDb: () => Db, now: () => string) {
       return `${v < 0n ? "-" : ""}${a / 100n}.${(a % 100n).toString().padStart(2, "0")}`;
     };
     const cols = [
-      "kind", "ref", "full_name", "phone_masked", "program", "department", "department_name", "faculty", "level", "enrolment_status",
+      "kind", "ref", "full_name", "phone_masked", "email_masked", "program", "department", "department_name", "faculty", "level", "enrolment_status",
       "applicant_status", "obligations", "billed_sle", "collected_sle", "balance_sle", "standing", "overdue", "overdue_sle", "last_payment_at", "payer_id",
     ];
     const lines = rows(f, me).map((p) =>
       [
-        p.kind, p.ref, p.fullName, p.maskedPhone, p.programCode, p.department, p.departmentName, p.facultyCode, p.level, p.enrolmentStatus,
+        p.kind, p.ref, p.fullName, p.maskedPhone, p.maskedEmail, p.programCode, p.department, p.departmentName, p.facultyCode, p.level, p.enrolmentStatus,
         p.applicantStatus, p.obligations, sle(p.billed), sle(p.collected), sle(p.balance), p.standing, p.overdue, sle(p.overdueAmount), p.lastPaymentAt, p.id,
       ]
         .map(cell)

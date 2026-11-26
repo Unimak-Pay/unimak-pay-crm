@@ -36,15 +36,18 @@ function Kpi({ label, children, hint, testId }: { label: string; children: React
 function Totals({ r }: { r: Report }) {
   const t = r.totals;
   return (
-    <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6" data-testid="outstanding-totals">
+    <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7" data-testid="outstanding-totals">
       <Kpi label="Students billed" testId="kpi-students" hint={`of ${r.roster.activeStudents} active in the roster`}>
         {t.students}
       </Kpi>
       <Kpi label="Billed">
         <Money minor={t.billed} />
       </Kpi>
-      <Kpi label="Collected" hint={`${formatRate(t.collectionRate)} of billed`}>
+      <Kpi label="Collected">
         <Money minor={t.collected} />
+      </Kpi>
+      <Kpi label="Collection rate" testId="kpi-rate" hint="collected ÷ billed">
+        {formatRate(t.collectionRate)}
       </Kpi>
       <Kpi label="Outstanding" testId="kpi-outstanding">
         <Money minor={t.outstanding} />
@@ -52,8 +55,8 @@ function Totals({ r }: { r: Report }) {
       <Kpi label="Overdue" testId="kpi-overdue" hint={`${t.overdue} ${t.overdue === 1 ? "student" : "students"} past a due date`}>
         <Money minor={t.overdueAmount} />
       </Kpi>
-      <Kpi label="Paid · part-paid · unpaid" testId="kpi-standing">
-        {t.paid} · {t.partPaid} · {t.unpaid}
+      <Kpi label="Paid · part-paid · unpaid · overdue" testId="kpi-standing">
+        {t.paid} · {t.partPaid} · {t.unpaid} · {t.overdue}
       </Kpi>
     </div>
   );
@@ -191,7 +194,7 @@ function OutstandingReport() {
             {me.departmentScoped && ` Only ${scope.departments.join(", ") || "your departments"}.`}
           </>
         }
-        actions={r ? <SyncBadge lastAppliedAt={r.roster.lastPortalEventAt} now={now} /> : null}
+        actions={r ? <SyncBadge lastAppliedAt={r.roster.lastPortalEventAt} now={now} data /> : null}
       />
       <FilterBar onReset={reset} active={active}>
         <FeeFilters feeId={values.feeId} feeType={values.feeType} period={values.period} onChange={set} fallback={fallback} />

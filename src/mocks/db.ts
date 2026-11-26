@@ -43,7 +43,7 @@ const ALL_PERMS: S["Permission"][] = [
   "fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export",
   "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "accounts.manage", "payouts.read",
   "payouts.manage", "transfers.read", "transfers.retry", "reconciliation.read", "reconciliation.manage", "outbox.read",
-  "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage", "academics.manage", "portal.read",
+  "outbox.retry", "reports.read", "audit.read", "users.manage", "settings.manage", "academics.manage", "portal.read", "clearance.manage",
 ];
 /**
  * Mirrors the backend's role bundles (fixtures only; the app reads `me.permissions`). Commission
@@ -55,6 +55,7 @@ export const ROLE_PERMISSIONS: Record<S["AdminRole"], S["Permission"][]> = {
     "fees.read", "fees.manage", "instalments.manage", "payers.read", "payers.adjust", "payments.read", "payments.export",
     "payments.refund", "payments.reconcile", "receipts.resend", "accounts.read", "payouts.read",
     "reconciliation.read", "reconciliation.manage", "outbox.read", "outbox.retry", "portal.read", "reports.read",
+    "clearance.manage",
   ],
   FINANCE_OFFICER: [
     "payers.read", "payments.read", "payments.export", "receipts.resend", "accounts.read", "payouts.read",
@@ -219,7 +220,11 @@ export function createDb() {
     const late = completed && r() < 0.05;
     const completedMs = completed ? createdMs + (late ? 40 * 60_000 : Math.floor(r() * 8 * 60_000) + 30_000) : null;
     const expiresMs = createdMs + 30 * 60_000;
+    // payments no longer expire (docs/payment-lifecycle.md): what used to be "open past expiry" is now
+    // PROCESSING (Monime collecting), half of them for over an hour; PENDING = awaiting payment, deleted after 7 days
     const stale = status === "PENDING" && i >= 3;
+    const shown: S["PaymentStatus"] = stale ? "PROCESSING" : status;
+    const pendingCreatedMs = NOW - (stale ? (i % 2 === 0 ? 180 : 30) : 10) * 60_000;
     const isApplicant = ft.payerKind === "APPLICANT";
     const ref = isApplicant ? `APP-2026-${String(1000 + i).padStart(4, "0")}` : `UNI-2025-${String(i).padStart(4, "0")}`;
     const id = uuid(8);
@@ -246,15 +251,18 @@ export function createDb() {
       id, obligationId: entry?.obligationId ?? uuid(11), amount, channel, clientId: channel === "DOTS" ? "dash-dots" : "ussd",
       idempotencyKey: `idem-${id.slice(-8)}`, paymentRef: String(15_000_000 + Math.floor(r() * 84_999_999)),
       payerPhone: completed ? (r() < 0.5 ? `+23276****${String(10 + Math.floor(r() * 89))}` : `+2327${Math.floor(1_000_000 + r() * 8_999_999)}`) : null,
-      phoneAuthorized: false, collectionMethod: channel === "USSD" ? "USSD_FLOW" : "PAYMENT_CODE", status,
+      phoneAuthorized: false, collectionMethod: channel === "USSD" ? "USSD_FLOW" : "PAYMENT_CODE", status: shown,
       monimeRef: `pmc-${id.slice(-10)}`, ussdCode: status === "PENDING" ? "*715*1*7344331308#" : null,
-      monimePaymentId: completed ? `spm-${id.slice(-10)}` : null, monimeOrderNumber: orderNumber,
+      monimePaymentId: completed || stale ? `spm-${id.slice(-10)}` : null, monimeOrderNumber: orderNumber,
       pricingConfigId: uuid(12), monimeFee, platformFee, netAmount: net,
-      expiresAt: iso(stale ? NOW - 20 * 60_000 : status === "PENDING" ? NOW + 20 * 60_000 : expiresMs),
+      // PENDING: deleted if unpaid 7 days after it was made; older rows keep their old 15-minute expiry
+      expiresAt: iso(status === "PENDING" ? pendingCreatedMs + 7 * DAY : expiresMs),
+      processingAt: stale ? iso(pendingCreatedMs + 2 * 60_000) : completedMs ? iso(completedMs - 20_000) : null,
       completedAt: completedMs ? iso(completedMs) : null,
       failureReason: status === "FAILED" ? pick(["Payer cancelled", "Insufficient balance", "Payment code expired at Monime"]) : null,
-      createdAt: iso(status === "PENDING" ? NOW - (stale ? 50 : 10) * 60_000 : createdMs),
-      updatedAt: iso(completedMs ?? createdMs),
+      createdAt: iso(status === "PENDING" ? pendingCreatedMs : createdMs),
+      updatedAt: iso(completedMs ?? (status === "PENDING" ? pendingCreatedMs : createdMs)),
+      payRequestId: null, paidByName: null, payingForSelf: false, monimeChannelType: completed ? (channel === "USSD" ? "momo" : "wallet") : null,
       feeTypeCode: ft.code, feeName: fee.name,
       // names are filled in by the handlers from the current departments/faculties
       payer: { kind: ft.payerKind, ref, fullName: `${pick(FIRST)} ${pick(LAST)}`, programCode, department, departmentName: null, facultyCode: null, facultyName: null },
@@ -398,7 +406,35 @@ export function createDb() {
   const portalEvents = seedPortalEvents();
   const roster = seedRoster(fees, feeTypes, rateRules);
 
-  return { faculties, departments, users, feeTypes, accounts, fees, rateRules, eligibilityRules, instalmentRules, payments, transfers, ledger, payouts, outbox, runs, items, webhookEvents, audit, banks, obligations, needsReview, portalEvents, roster };
+  // Payment lifecycle (added last so earlier fixture ids don't shift): two unpaid payments the cleanup removed,
+  // and a payment Monime then completed for one of them, which comes back UNMATCHED for a person.
+  const deletedPayments = [
+    { id: uuid(28), paymentRef: "15999001", amount: "450000", reason: "retention", at: NOW - 2 * DAY },
+    { id: uuid(28), paymentRef: "15999002", amount: "150000", reason: "another payment for this fee completed (30000123)", at: NOW - 5 * 3_600_000 },
+  ];
+  for (const d of deletedPayments) {
+    audit.push({
+      id: uuid(17), actorId: "system", action: "payment.delete_awaiting", entity: "Payment", entityId: d.id,
+      before: { paymentRef: d.paymentRef, obligationId: uuid(11), amount: d.amount, status: "PENDING", channel: "USSD", createdAt: iso(d.at - 7 * DAY), monimeRef: `pmc-${d.id.slice(-10)}` },
+      after: { reason: d.reason }, at: iso(d.at),
+    });
+  }
+  audit.sort((a, b) => b.at.localeCompare(a.at));
+  webhookEvents.unshift({
+    id: "evt-01JDDELETED1", type: "payment.processing_completed",
+    payload: { apiVersion: "caph.2025-08-23", event: { id: "evt-deleted", name: "payment.processing_completed", timestamp: iso(NOW - 3_600_000) }, data: { id: "spm-late000001", amount: { currency: "SLE", value: 450000 }, metadata: { paymentRef: "15999001" } } },
+    status: "UNMATCHED", attempts: 1,
+    error: `UNIMAK payment 15999001 not found (deleted while awaiting payment?); Monime spm-late000001 for obligation ${uuid(11)}: apply or refund by hand`,
+    receivedAt: iso(NOW - 3_600_000), processedAt: iso(NOW - 3_600_000 + 400), resolvedAt: null, resolvedBy: null, resolution: null,
+  });
+
+  // the migration's placeholder exam-clearance rule, until the finance office sets the real one
+  const clearancePolicy: S["ClearancePolicy"] = {
+    id: "current", examName: "First semester exams", period: "2026/27", feeTypeCodes: ["TUITION"], includeOverdue: true, placeholder: true,
+    updatedBy: "system:migration", updatedAt: iso(NOW - 3 * DAY),
+  };
+
+  return { faculties, departments, users, feeTypes, accounts, fees, rateRules, eligibilityRules, instalmentRules, payments, transfers, ledger, payouts, outbox, runs, items, webhookEvents, audit, banks, obligations, needsReview, portalEvents, roster, deletedPayments, clearancePolicy };
 }
 
 /** A payer's profile as the backend matches it against rules. */
@@ -586,8 +622,10 @@ function seedRoster(fees: S["Fee"][], feeTypes: S["FeeType"][], rateRules: S["Ra
     const p: RosterPayer = {
       id: uuid(23), fullName: `${pick(FIRST)} ${pick(LAST)}`, phone: phone(), departmentName: null, facultyCode: null, facultyName: null,
       level: null, finalYear: null, residency: "LOCAL", intake: "2025-SEP", applicantStatus: null, enrolmentStatus: null, applicationRef: null,
-      portalUpdatedAt: iso(NOW - Math.floor(r() * 30) * DAY - 3_600_000), snapshotAt: iso(NOW - 90 * DAY), ...o,
+      portalUpdatedAt: iso(NOW - Math.floor(r() * 30) * DAY - 3_600_000), snapshotAt: iso(NOW - 90 * DAY), email: null, ...o,
     };
+    // the portal gives an email for most (from the name, not the RNG, so the rest of the roster stays put); every fifth has none
+    if (o.email === undefined && payers.length % 5 !== 4) p.email = `${p.fullName.toLowerCase().replace(/\s+/g, ".")}${payers.length}@gmail.com`;
     payers.push(p);
     return p;
   };
@@ -630,7 +668,8 @@ function seedRoster(fees: S["Fee"][], feeTypes: S["FeeType"][], rateRules: S["Ra
         collectionMethod: channel === "USSD" ? "USSD_FLOW" : "PAYMENT_CODE", status, monimeRef: `pmc-${id.slice(-10)}`, ussdCode: null,
         monimePaymentId: completed ? `spm-${id.slice(-10)}` : null, monimeOrderNumber: completed ? `3BMR${String(paymentNo).padStart(6, "0")}QX` : null,
         pricingConfigId: uuid(12), monimeFee: fee15, platformFee: fee10, netAmount: (amt - BigInt(fee15) - BigInt(fee10)).toString(),
-        expiresAt: iso(at + 30 * 60_000), completedAt: completed ? iso(at + 240_000) : null,
+        expiresAt: iso(at + 30 * 60_000), processingAt: completed ? iso(at + 220_000) : null, completedAt: completed ? iso(at + 240_000) : null,
+        payRequestId: null, paidByName: null, payingForSelf: true, monimeChannelType: completed ? "momo" : null,
         failureReason: status === "FAILED" ? "Insufficient balance" : null, createdAt: iso(at), updatedAt: iso(at + 240_000),
         feeTypeCode: ft.code, feeName: f.name,
         payer: { kind: p.kind, ref: p.ref, fullName: p.fullName, programCode: p.programCode, department: p.department, departmentName: null, facultyCode: null, facultyName: null },
@@ -712,7 +751,7 @@ function seedRoster(fees: S["Fee"][], feeTypes: S["FeeType"][], rateRules: S["Ra
   }
 
   // applicants: the application fee, by status
-  payer({ kind: "APPLICANT", ref: linkedApp, programCode: payers[0].programCode, department: payers[0].department, intake: "2025-SEP", applicantStatus: "ADMITTED", fullName: payers[0].fullName, phone: payers[0].phone });
+  payer({ kind: "APPLICANT", ref: linkedApp, programCode: payers[0].programCode, department: payers[0].department, intake: "2025-SEP", applicantStatus: "ADMITTED", fullName: payers[0].fullName, phone: payers[0].phone, email: payers[0].email });
   const statuses = ["APPLIED", "APPLIED", "APPLIED", "ADMITTED", "ADMITTED", "REJECTED", "WITHDRAWN"] as const;
   for (let i = 0; i < 14; i++) {
     const [programCode, department] = pick(PROGRAMS);

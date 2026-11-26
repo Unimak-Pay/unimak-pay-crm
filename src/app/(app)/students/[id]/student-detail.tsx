@@ -8,7 +8,7 @@ import { api, call } from "@/api/client";
 import { isApiError } from "@/api/errors";
 import { qk } from "@/api/keys";
 import type { components } from "@/api/schema.gen";
-import { CopyValue, DateTime, Day, Money, StatusBadge } from "@/components/format";
+import { CopyValue, DateTime, Day, Money, PaymentStatusBadge, StatusBadge } from "@/components/format";
 import { BackLink } from "@/components/history-link";
 import { RequireOp, useCanOp } from "@/components/permission";
 import { EmptyState, ErrorState, Field, Fields, LoadingBlock, PageHeader } from "@/components/states";
@@ -94,7 +94,7 @@ function Payments({ payments }: { payments: Obligation["payments"] }) {
                 {p.channel} <span className="text-xs text-muted-foreground">· {p.collectionMethod.replace(/_/g, " ").toLowerCase()}</span>
               </TableCell>
               <TableCell>
-                <StatusBadge status={p.status} />
+                <PaymentStatusBadge status={p.status} />
                 {p.failureReason && <div className="text-[11px] text-destructive">{p.failureReason}</div>}
               </TableCell>
               <TableCell className="text-right">
@@ -252,7 +252,7 @@ function View({ id }: { id: string }) {
       return (
         <div className="max-w-5xl">
           <BackLink href="/students">Students</BackLink>
-          <EmptyState title="Student not found">They may be outside your departments.</EmptyState>
+          <EmptyState title="Not in your departments">This student isn&apos;t in a department you can see, or no longer exists.</EmptyState>
         </div>
       );
     return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
@@ -295,6 +295,9 @@ function View({ id }: { id: string }) {
             <Fields>
               <Field label="Phone">
                 <CopyValue value={p.phone} className="text-sm" />
+              </Field>
+              <Field label="Email">
+                {p.email ? <CopyValue value={p.email} className="text-sm" truncate /> : <span className="text-muted-foreground">None from the portal</span>}
               </Field>
               <Field label={student ? "Student ID" : "Application ref"}>
                 <CopyValue value={p.ref} />

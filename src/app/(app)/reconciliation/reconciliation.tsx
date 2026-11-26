@@ -8,7 +8,7 @@ import type { components } from "@/api/schema.gen";
 import { reconciliationItemStatusValues, reconciliationRunStatusValues, webhookEventStatusValues } from "@/api/schema.gen";
 import { columnsFor, DataTable } from "@/components/data-table";
 import { FilterBar, FilterSearch, FilterSelect } from "@/components/filters";
-import { DateTime, Money, StatusBadge } from "@/components/format";
+import { DateTime, Money, PaymentStatusBadge, StatusBadge } from "@/components/format";
 import { RequireOp } from "@/components/permission";
 import { ErrorState, LoadingBlock, PageHeader } from "@/components/states";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -68,10 +68,13 @@ const pmCol = columnsFor<S["Payment"]>();
 const paymentColumns = [
   pmCol.accessor("createdAt", { header: "Created", cell: (c) => <DateTime iso={c.getValue()} /> }),
   pmCol.accessor("paymentRef", { header: "Ref", cell: (c) => <span className="font-mono text-xs">{c.getValue()}</span> }),
-  pmCol.accessor("status", { header: "Status", cell: (c) => <StatusBadge status={c.getValue()} /> }),
-  pmCol.accessor("expiresAt", { header: "Expired", cell: (c) => <DateTime iso={c.getValue()} /> }),
+  pmCol.accessor("status", { header: "Status", cell: (c) => <PaymentStatusBadge status={c.getValue()} /> }),
+  pmCol.accessor("processingAt", { header: "Processing since", cell: (c) => <DateTime iso={c.getValue()} /> }),
   pmCol.accessor("amount", { header: "Amount", meta: { align: "right" }, cell: (c) => <Money minor={c.getValue()} /> }),
 ];
+
+/** Oldest processing first (the server already sorts; this keeps it so whatever arrives). */
+const byProcessingAt = (rows: S["Payment"][]) => [...rows].sort((a, b) => (a.processingAt ?? "").localeCompare(b.processingAt ?? ""));
 
 function Attention({ s }: { s: Summary }) {
   const L = s.listLimit;
@@ -114,9 +117,12 @@ function Attention({ s }: { s: Summary }) {
       <Section id="deadOutbox" title="Dead outbox messages" count={s.counts.deadOutbox} limit={L}>
         <DataTable {...small} columns={outboxColumns} rows={s.deadOutbox} getRowId={(m) => m.id} rowHref={(m) => `/treasury/outbox/${m.id}`} emptyTitle="None" />
       </Section>
-      <Section id="staleOpenPayments" title="Open payments past expiry" count={s.counts.staleOpenPayments} limit={L}>
-        <p className="mb-2 text-xs text-muted-foreground">The expiry job closes these within 5 minutes. Open one to check it with Monime now.</p>
-        <DataTable {...small} columns={paymentColumns} rows={s.staleOpenPayments} getRowId={(p) => p.id} rowHref={(p) => `/payments/${p.id}`} emptyTitle="None" />
+      <Section id="staleOpenPayments" title="Processing for over an hour" count={s.counts.staleOpenPayments} limit={L}>
+        <p className="mb-2 text-xs text-muted-foreground">
+          Monime started collecting but hasn&apos;t confirmed. With no completion in 24 hours they go back to awaiting payment; if Monime did collect, the
+          nightly reconciliation completes them. Oldest first.
+        </p>
+        <DataTable {...small} columns={paymentColumns} rows={byProcessingAt(s.staleOpenPayments)} getRowId={(p) => p.id} rowHref={(p) => `/payments/${p.id}`} emptyTitle="None" />
       </Section>
     </div>
   );

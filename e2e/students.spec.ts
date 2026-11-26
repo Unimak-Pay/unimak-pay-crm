@@ -17,7 +17,7 @@ test.describe("outstanding", () => {
     await signIn(page, PERSONA.auditor);
     await nav(page).getByRole("link", { name: "Outstanding" }).click();
     await expect(page.getByRole("heading", { name: "Outstanding" })).toBeVisible();
-    await expect(page.getByTestId("portal-sync")).toHaveText(/Last update from the portal: 5 min ago/);
+    await expect(page.getByTestId("portal-sync")).toHaveText(/Data from the portal, updated 5 min ago/);
 
     // Law, Nursing, Computer Science, IT, Economics × levels 1–4; Mass Communication levels 1–2 only (no faculty yet)
     await expect(page.getByTestId("heat-row")).toHaveCount(6);
@@ -37,6 +37,8 @@ test.describe("outstanding", () => {
     const students = await kpi(page, "kpi-students");
     expect(students).toBeGreaterThan(50);
     await expect(page.getByTestId("kpi-students")).toContainText("active in the roster");
+    await expect(page.getByTestId("kpi-rate")).toHaveText(/Collection rate\s*\d+%/);
+    await expect(page.getByTestId("kpi-standing")).toHaveText(/\d+ · \d+ · \d+ · \d+/);
     await expect(page.getByTestId("kpi-overdue")).toContainText(/students past a due date/);
 
     // per-fee table and applicants by status
@@ -112,15 +114,19 @@ test.describe("students list", () => {
     await signIn(page, PERSONA.auditor);
     await nav(page).getByRole("link", { name: "Students", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Students", exact: true })).toBeVisible();
-    for (const h of ["Ref", "Name", "Phone", "Department", "Level", "Status", "Billed", "Collected", "Balance", "Standing", "Last payment"])
+    for (const h of ["Ref", "Name", "Phone", "Email", "Department", "Level", "Status", "Billed", "Collected", "Balance", "Standing", "Last payment"])
       await expect(page.getByRole("columnheader", { name: h })).toBeVisible();
 
     // default: highest balance first, 50 a page
     await expect(listRows(page)).toHaveCount(50);
-    const balances = await listRows(page).locator("td:nth-child(9)").allInnerTexts();
+    const balances = await listRows(page).locator("td:nth-child(10)").allInnerTexts();
     const minor = balances.map((b) => Number(b.replace(/[^\d]/g, "")));
     expect([...minor].sort((a, b) => b - a)).toEqual(minor);
     for (const phone of (await listRows(page).locator("td:nth-child(3)").allInnerTexts()).slice(0, 5)) expect(phone).toMatch(/^\+232\*+\d{3}$/);
+    // emails masked too; some students have none
+    const emails = await listRows(page).locator("td:nth-child(4)").allInnerTexts();
+    for (const e of emails) expect(e).toMatch(/^([a-z]\*\*\*@gmail\.com|—)$/);
+    expect(emails).toContain("—");
 
     // export only with payments.export (the auditor has none)
     await expect(page.getByRole("button", { name: "Export CSV" })).toHaveCount(0);
@@ -155,7 +161,7 @@ test.describe("students list", () => {
     const text = (await (await file.createReadStream()).toArray()).join("");
     const lines = text.trim().split(/\r?\n/);
     expect(lines[0].replace(/^﻿/, "")).toBe(
-      "kind,ref,full_name,phone_masked,program,department,department_name,faculty,level,enrolment_status,applicant_status,obligations,billed_sle,collected_sle,balance_sle,standing,overdue,overdue_sle,last_payment_at,payer_id",
+      "kind,ref,full_name,phone_masked,email_masked,program,department,department_name,faculty,level,enrolment_status,applicant_status,obligations,billed_sle,collected_sle,balance_sle,standing,overdue,overdue_sle,last_payment_at,payer_id",
     );
     expect(lines).toHaveLength(rows + 1);
     for (const l of lines.slice(1)) expect(l).toMatch(/,LAW,Law,.*,PAID,/);
@@ -167,6 +173,7 @@ test.describe("student detail", () => {
     await signIn(page, PERSONA.auditor, { next: "/students?q=UNI-2025-0100" });
     await expect(listRows(page)).toHaveCount(1);
     const masked = await listRows(page).locator("td:nth-child(3)").innerText();
+    const maskedEmail = await listRows(page).locator("td:nth-child(4)").innerText();
     await listRows(page).first().click();
     await expect(page).toHaveURL(/\/students\/[0-9a-f-]{36}$/);
 
@@ -175,6 +182,11 @@ test.describe("student detail", () => {
     await expect(phone).toBeVisible();
     const full = (await phone.getAttribute("aria-label"))!.replace("Copy ", "");
     expect(masked).toBe(`${full.slice(0, 4)}*****${full.slice(-3)}`);
+    // and the full email, copyable, which the list masks
+    const email = page.getByRole("button", { name: /^Copy .+@gmail\.com$/ });
+    await expect(email).toBeVisible();
+    const fullEmail = (await email.getAttribute("aria-label"))!.replace("Copy ", "");
+    expect(maskedEmail).toBe(`${fullEmail[0]}***@gmail.com`);
 
     const cards = page.getByTestId("obligation-card");
     expect(await cards.count()).toBeGreaterThan(0);
@@ -216,8 +228,7 @@ test.describe("student detail", () => {
     await expect(hod.getByRole("link", { name: "Event log" })).toHaveCount(0);
 
     await hod.goto(lawStudent);
-    await expect(hod.getByText("Student not found")).toBeVisible();
-    await expect(hod.getByText("They may be outside your departments.")).toBeVisible();
+    await expect(hod.getByText("Not in your departments")).toBeVisible();
     await ctx.close();
   });
 });

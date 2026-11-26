@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/errors";
 import { ConfirmDialog } from "./confirm-dialog";
-import { StatusBadge, statusTone } from "./format";
+import { PaymentStatusBadge, StatusBadge, statusTone } from "./format";
 import { GatedButton } from "./permission";
 import { TooltipProvider } from "./ui/tooltip";
 
@@ -81,5 +81,38 @@ describe("StatusBadge", () => {
     expect(statusTone("EXPIRED")).toBe("grey");
     render(<StatusBadge status="AUTO_RESOLVED" />);
     expect(screen.getByText("AUTO RESOLVED")).toBeInTheDocument();
+  });
+});
+
+describe("PaymentStatusBadge", () => {
+  it("says what a payment's status means now that payments don't expire", () => {
+    const cases = [
+      ["PENDING", "Awaiting payment"],
+      ["PROCESSING", "Processing"],
+      ["COMPLETED", "Paid"],
+      ["FAILED", "Failed"],
+      ["EXPIRED", "Expired (old)"],
+    ] as const;
+    for (const [status, label] of cases) {
+      const { unmount } = render(<PaymentStatusBadge status={status} />);
+      expect(screen.getByText(label)).toHaveAttribute("data-status", status);
+      unmount();
+    }
+  });
+
+  it("blue for processing, green for paid, grey for awaiting, muted (outlined) for old expired ones", () => {
+    const { container } = render(
+      <>
+        <PaymentStatusBadge status="PROCESSING" />
+        <PaymentStatusBadge status="COMPLETED" />
+        <PaymentStatusBadge status="PENDING" />
+        <PaymentStatusBadge status="EXPIRED" />
+      </>,
+    );
+    const [processing, paid, pending, expired] = [...container.querySelectorAll("[data-status]")];
+    expect(processing.className).toMatch(/sky/);
+    expect(paid.className).toMatch(/emerald/);
+    expect(pending.className).toMatch(/bg-muted/);
+    expect(expired.className).toMatch(/bg-transparent/);
   });
 });

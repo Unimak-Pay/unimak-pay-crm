@@ -18,6 +18,7 @@ import { useCursorList } from "@/hooks/use-cursor-list";
 import { compact, useUrlFilters } from "@/hooks/use-url-filters";
 import { jsonDiff } from "@/lib/json-diff";
 import { cn } from "@/lib/utils";
+import { auditLabel, auditSummary } from "./audit-labels";
 
 type Entry = components["schemas"]["AuditLog"];
 const KEYS = ["entity", "entityId", "actorId"] as const;
@@ -150,7 +151,17 @@ function Page() {
                         <TableCell>
                           <DateTime iso={e.at} />
                         </TableCell>
-                        <TableCell className="font-mono text-xs">{e.action}</TableCell>
+                        <TableCell data-testid="audit-action">
+                          {auditLabel(e.action) ? (
+                            <>
+                              <div>{auditLabel(e.action)}</div>
+                              <div className="font-mono text-[11px] text-muted-foreground">{e.action}</div>
+                            </>
+                          ) : (
+                            <span className="font-mono text-xs">{e.action}</span>
+                          )}
+                          {auditSummary(e) && <div className="text-xs text-muted-foreground">{auditSummary(e)}</div>}
+                        </TableCell>
                         <TableCell>
                           <span className="mr-1">{e.entity}</span>
                           {href ? (

@@ -222,8 +222,8 @@ function summary(url: URL, me: Principal) {
   const groups = new Map<string, typeof done>();
   for (const p of done) groups.set(p.feeTypeCode, [...(groups.get(p.feeTypeCode) ?? []), p]);
   const started = inScope.filter((p) => inRange(p.createdAt));
-  const isExpired = (p: (typeof started)[number]) =>
-    p.status === "EXPIRED" || ((p.status === "PENDING" || p.status === "INITIATED") && p.expiresAt < now());
+  // payments don't expire any more: EXPIRED is only rows from before 2026-11-28
+  const isExpired = (p: (typeof started)[number]) => p.status === "EXPIRED";
   const ca = (ps: typeof started) => ({ count: ps.length, amount: sum(ps.map((p) => p.amount)).toString() });
   const completed = started.filter((p) => p.status === "COMPLETED");
   const showMoney = (perm: Permission) => !me.departmentScoped && me.permissions.includes(perm);
@@ -271,7 +271,8 @@ function summary(url: URL, me: Principal) {
     payments: {
       started: started.length,
       completed: ca(completed),
-      pending: ca(started.filter((p) => (p.status === "PENDING" || p.status === "INITIATED") && !isExpired(p))),
+      pending: ca(started.filter((p) => p.status === "PENDING" || p.status === "INITIATED")),
+      processing: ca(started.filter((p) => p.status === "PROCESSING")),
       failed: ca(started.filter((p) => p.status === "FAILED")),
       expired: ca(started.filter(isExpired)),
       completionRate: started.length ? completed.length / started.length : null,
@@ -651,16 +652,10 @@ export const apiHandlers = [
     return HttpResponse.json(withNames({ ...p, commissionTransfer: me.permissions.includes("transfers.read") ? p.commissionTransfer : null }));
   }),
   route("adminReconcilePayment", ({ params, me }) => {
-    const p = db.payments.find((x) => x.id === params.id);
-    if (!p) return fail(404, "NOT_FOUND", "Payment not found");
-    const before = p.status;
-    if ((p.status === "PENDING" || p.status === "INITIATED") && p.expiresAt < now()) {
-      p.status = "EXPIRED";
-      p.ussdCode = null;
-      p.updatedAt = now();
-      audit(me, "payment.reconcile", "Payment", p.id, { status: before }, { status: p.status });
-    }
-    return HttpResponse.json({ paymentId: p.id, before, after: p.status });
+    const p = db.payments.find((x) => x.id === params.id) ?? db.roster.payments.find((x) => x.id === params.id);
+    if (!p || (me.departmentScoped && !me.departments.includes(p.payer.department ?? ""))) return fail(404, "NOT_FOUND", "Payment not found");
+    // only reports what Monime says: payments don't expire, completion only comes from the webhook
+    return HttpResponse.json({ paymentId: p.id, before: p.status, after: p.status });
   }),
 
   // ── fee types ──
@@ -1023,6 +1018,29 @@ export const apiHandlers = [
     );
     return page(rows, url);
   }),
+  // ── exam clearance rule ──
+  route("adminGetClearancePolicy", () => HttpResponse.json(db.clearancePolicy)),
+  route("adminPutClearancePolicy", async ({ request, me }) => {
+    const b = await body<Partial<{ examName: string; period: string; feeTypeCodes: string[]; includeOverdue: boolean }>>(request);
+    const errors: string[] = [];
+    if (typeof b.examName !== "string" || b.examName.length < 1 || b.examName.length > 80) errors.push("examName must be longer than or equal to 1 and shorter than or equal to 80 characters");
+    if (typeof b.period !== "string" || b.period.length < 1 || b.period.length > 20) errors.push("period must be longer than or equal to 1 and shorter than or equal to 20 characters");
+    if (!Array.isArray(b.feeTypeCodes) || b.feeTypeCodes.length > 20) errors.push("feeTypeCodes must contain no more than 20 elements");
+    if (typeof b.includeOverdue !== "boolean") errors.push("includeOverdue must be a boolean value");
+    if (errors.length) return invalid(...errors);
+    const codes = [...new Set(b.feeTypeCodes!)];
+    if (!codes.length && !b.includeOverdue) return fail(400, "VALIDATION", "The rule must list fee types or count overdue fees; otherwise everyone is cleared");
+    const unknown = codes.filter((c) => !db.feeTypes.some((t) => t.code === c));
+    if (unknown.length) return fail(400, "VALIDATION", `Unknown fee type code(s): ${unknown.join(", ")}`);
+    const before = { ...db.clearancePolicy };
+    db.clearancePolicy = {
+      ...db.clearancePolicy, examName: b.examName!.trim(), period: b.period!.trim(), feeTypeCodes: codes, includeOverdue: b.includeOverdue!,
+      placeholder: false, updatedBy: `admin:${me.id}`, updatedAt: now(),
+    };
+    audit(me, "clearance_policy.update", "ClearancePolicy", "current", before, db.clearancePolicy);
+    return HttpResponse.json(db.clearancePolicy);
+  }),
+
   // ── students (export.csv and needs-review before /:id) ──
   route("adminReportsOutstanding", ({ url, me }) => {
     const f = parseFilters(url);
@@ -1087,7 +1105,11 @@ export const apiHandlers = [
       stuckPayouts: db.payouts.filter((p) => ["REQUESTED", "SUBMITTED", "PROCESSING"].includes(p.status) && p.createdAt < hourAgo),
       failedPayouts: db.payouts.filter((p) => p.status === "FAILED" && p.updatedAt > weekAgo),
       deadOutbox: db.outbox.filter((m) => m.status === "DEAD"),
-      staleOpenPayments: db.payments.filter((p) => (p.status === "PENDING" || p.status === "INITIATED") && p.expiresAt < now()).map(listPayment),
+      // PROCESSING for over an hour, oldest first
+      staleOpenPayments: db.payments
+        .filter((p) => p.status === "PROCESSING" && !!p.processingAt && Date.parse(p.processingAt) < mockNow() - 3_600_000)
+        .sort((a, b) => a.processingAt!.localeCompare(b.processingAt!))
+        .map(listPayment),
     };
     const counts = Object.fromEntries(Object.entries(lists).map(([k, v]) => [k, v.length])) as S["ReconciliationSummary"]["counts"];
     const limit = 100;

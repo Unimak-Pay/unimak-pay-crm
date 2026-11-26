@@ -9,7 +9,7 @@ import { useMe } from "@/auth/auth-provider";
 import { AcademicFilters, useScopeNames } from "@/components/academics";
 import { columnsFor, DataTable, minorSortValue } from "@/components/data-table";
 import { DayRangeFilter, FilterBar, FilterSearch, FilterSelect } from "@/components/filters";
-import { CopyValue, DateTime, Money, StatusBadge } from "@/components/format";
+import { CopyValue, DateTime, Money, PAYMENT_STATUS_LABEL, PaymentStatusBadge } from "@/components/format";
 import { ExportCsvButton } from "@/components/export-button";
 import { RequireOp, useCanOp } from "@/components/permission";
 import { PageHeader } from "@/components/states";
@@ -49,7 +49,7 @@ const columns = [
   col.accessor("feeTypeCode", { header: "Fee", enableSorting: false, cell: (c) => <span title={c.row.original.feeName}>{c.getValue()}</span> }),
   col.accessor("channel", { header: "Channel", enableSorting: false }),
   col.accessor("payerPhone", { header: "Phone", enableSorting: false, cell: (c) => <span className="font-mono text-xs">{c.getValue() ?? "—"}</span> }),
-  col.accessor("status", { header: "Status", enableSorting: false, cell: (c) => <StatusBadge status={c.getValue()} /> }),
+  col.accessor("status", { header: "Status", enableSorting: false, cell: (c) => <PaymentStatusBadge status={c.getValue()} /> }),
   col.accessor((p) => minorSortValue(p.amount), {
     id: "amount",
     header: "Amount",
@@ -103,7 +103,7 @@ function List() {
           onChange={(v) => set({ ref: v })}
         />
         <FilterSearch label="Payer (student / applicant ref)" placeholder="UNI-2025-0002" value={values.payerRef} onChange={(v) => set({ payerRef: v })} />
-        <FilterSelect label="Status" value={values.status} onChange={(v) => set({ status: v })} options={STATUSES} />
+        <FilterSelect label="Status" value={values.status} onChange={(v) => set({ status: v })} options={STATUSES.map((s) => ({ value: s, label: PAYMENT_STATUS_LABEL[s] }))} />
         <FilterSelect label="Channel" value={values.channel} onChange={(v) => set({ channel: v })} options={channelValues} />
         <FilterSelect
           label="Fee type"

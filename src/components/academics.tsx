@@ -186,7 +186,7 @@ export function FacultySelect({
   );
 }
 
-function CheckList({
+export function CheckList({
   legend,
   groups,
   value,

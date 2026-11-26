@@ -35,6 +35,11 @@ const columns = [
     ),
   }),
   col.accessor("maskedPhone", { header: "Phone", enableSorting: false, cell: (c) => <span className="font-mono text-xs whitespace-nowrap">{c.getValue()}</span> }),
+  col.accessor("maskedEmail", {
+    header: "Email",
+    enableSorting: false,
+    cell: (c) => (c.getValue() ? <span className="font-mono text-xs whitespace-nowrap">{c.getValue()}</span> : <span className="text-muted-foreground">—</span>),
+  }),
   col.accessor((r) => r.departmentName ?? r.department ?? "", {
     id: "department",
     header: "Department",
@@ -84,7 +89,7 @@ function List() {
         title="Students"
         description={
           <>
-            Students and applicants with what they were billed, have paid and still owe. Phones are masked; open a student for the full number.
+            Students and applicants with what they were billed, have paid and still owe. Phones and emails are masked; open a student for them in full.
             {me.departmentScoped && ` Only ${scope.departments.join(", ") || "your departments"}.`}
           </>
         }

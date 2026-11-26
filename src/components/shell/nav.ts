@@ -2,6 +2,7 @@ import {
   ArrowLeftRight,
   BadgeDollarSign,
   Banknote,
+  ClipboardCheck,
   Contact,
   FileClock,
   GraduationCap,
@@ -37,6 +38,7 @@ export const NAV: NavGroup[] = [
     items: [
       { href: "/fees", label: "Fees", icon: BadgeDollarSign, op: "adminFees" },
       { href: "/fees/types", label: "Fee types", icon: Tags, op: "adminFeeTypes" },
+      { href: "/fees/clearance", label: "Exam clearance", icon: ClipboardCheck, op: "adminGetClearancePolicy" },
       { href: "/academics", label: "Faculties & departments", icon: GraduationCap, op: "adminListFaculties" },
     ],
   },
