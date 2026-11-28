@@ -22,7 +22,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { ACADEMICS_HREF, APP_NAME, AppIcon, NAV, activeHref } from "./nav";
+import { Logo } from "./logo";
+import { ACADEMICS_HREF, APP_NAME, NAV, activeHref } from "./nav";
 
 function NeedsReviewBadge() {
   const q = useNeedsReview();
@@ -73,9 +74,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
 function Brand() {
   return (
     <Link href="/" className="flex items-center gap-2 px-4 py-3 font-semibold">
-      <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-        <AppIcon className="size-4" aria-hidden />
-      </span>
+      <Logo size={28} />
       {APP_NAME}
       <span className="text-xs font-normal text-muted-foreground">admin</span>
     </Link>

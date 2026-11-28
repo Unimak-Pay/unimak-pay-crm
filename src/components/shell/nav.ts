@@ -9,7 +9,6 @@ import {
   Grid3x3,
   Inbox,
   LayoutDashboard,
-  Layers,
   type LucideIcon,
   Receipt,
   RefreshCw,
@@ -84,4 +83,3 @@ export function activeHref(pathname: string): string | null {
 export const ACADEMICS_HREF = "/academics";
 
 export const APP_NAME = "UNIMAK Pay";
-export const AppIcon = Layers;
